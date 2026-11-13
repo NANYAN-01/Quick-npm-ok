@@ -35,6 +35,13 @@ def main():
             "--name", APP_NAME,
             "--icon", "app.ico",
             "--add-data", "app.ico;.",
+            "--add-data", "app.png;.",
+            "--hidden-import", "app.core",
+            "--hidden-import", "app.deploy",
+            "--hidden-import", "app.i18n",
+            "--hidden-import", "app.tray",
+            "--hidden-import", "app.ui",
+            "--hidden-import", "app.updater",
             "npm_mirror_tool.py",
         ])
 

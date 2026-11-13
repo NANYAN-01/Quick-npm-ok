@@ -6,6 +6,7 @@ __pycache__/
 # PyInstaller 构建产物
 build/
 dist/
+out/
 *.spec
 
 # 本地无关环境
