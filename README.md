@@ -70,8 +70,11 @@ python npm_mirror_tool.py --selftest  # 无界面自检，结果写入 %TEMP%\np
 
 ```bash
 pip install pyinstaller
-build.bat
+python build.py          # 或双击 build.bat
 ```
+
+打包脚本会先生成 `app.ico`（9 个尺寸，16–256），再调用 PyInstaller。
+想换回仪表盘样式的图标，用 `python make_icon.py --variant gauge` 后重新打包。
 
 输出：`dist\npm源测速.exe`。
 
@@ -130,8 +133,9 @@ node npm-mirror-bench.mjs --json
 | 文件 | 用途 |
 |---|---|
 | `npm_mirror_tool.py` | GUI 主程序（v2.0 源码） |
-| `make_icon.py` | 生成 `app.ico` / `app.png`（纯标准库） |
-| `build.bat` | 一键打包 exe |
+| `make_icon.py` | 生成 `app.ico` / `app.png`（纯标准库，9 个尺寸，可 `--variant gauge`） |
+| `build.py` | 打包逻辑：生成图标 + PyInstaller |
+| `build.bat` | 双击打包入口（转调 `build.py`） |
 | `dist\npm源测速.exe` | 打包后的程序（本地产物，未纳入 git；发布版见 Releases） |
 | `npm-mirror-bench.mjs` | 命令行测速脚本 |
 | `npm源测速.bat` | 命令行脚本的 Windows 启动器 |
