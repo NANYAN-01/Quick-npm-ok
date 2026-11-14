@@ -177,7 +177,7 @@ class App:
         self.btn_upgrade = ttk.Button(right, text=tr("main.upgrade"), command=self.open_upgrade)
         self.btn_upgrade.pack(side="left", padx=(10, 0))
         ttk.Button(right, text=tr("main.env"), command=self.open_env).pack(side="left", padx=(6, 0))
-        self.btn_more = ttk.Menubutton(right, text=tr("main.more") + " ▾")
+        self.btn_more = ttk.Menubutton(right, text=tr("main.more"))
         self.btn_more.pack(side="left", padx=(6, 0))
         self._build_more_menu()
 
@@ -367,25 +367,45 @@ class App:
         if not os.path.exists(icon):
             return
         try:
-            tray = Tray(icon, f"{tr('main.title')} v{APP_VERSION}", {
-                "show": tr("tray.show"),
-                "benchmark": tr("tray.benchmark"),
-                "quit": tr("tray.quit"),
-            })
+            tray = Tray(icon, f"{tr('main.title')} v{APP_VERSION}")
             if tray.start():
                 self.tray = tray
         except Exception:  # noqa: BLE001
             self.tray = None
 
+    def _popup_tray_menu(self, x: int, y: int):
+        """托盘右键菜单用 Tk 自己画，系统菜单在部分机器上会渲染成空白框。"""
+        menu = getattr(self, "_tray_menu", None)
+        if menu is None:
+            menu = tk.Menu(
+                self.root, tearoff=0, font=(self.font_family, 10),
+                bg=CARD, fg=TEXT, bd=0, relief="solid",
+                activebackground=ACCENT, activeforeground="#ffffff",
+            )
+            menu.add_command(label=tr("tray.show"), command=self.show_window)
+            menu.add_command(label=tr("tray.benchmark"), command=self._tray_benchmark)
+            menu.add_separator()
+            menu.add_command(label=tr("tray.quit"), command=self.quit_app)
+            self._tray_menu = menu
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _tray_benchmark(self):
+        self.show_window()
+        self.start_test()
+
     def _drain_tray(self):
         if not self.tray:
             return
         for action in self.tray.pop_events():
-            if action == "show":
+            if isinstance(action, tuple) and action[0] == "menu":
+                self._popup_tray_menu(action[1], action[2])
+            elif action == "show":
                 self.show_window()
             elif action == "benchmark":
-                self.show_window()
-                self.start_test()
+                self._tray_benchmark()
             elif action == "quit":
                 self.quit_app()
 

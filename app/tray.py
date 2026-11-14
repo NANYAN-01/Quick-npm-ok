@@ -33,13 +33,6 @@ IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
 
-TPM_RIGHTBUTTON = 0x0002
-TPM_RETURNCMD = 0x0100
-
-ID_SHOW = 1001
-ID_BENCH = 1002
-ID_QUIT = 1003
-
 LRESULT = ctypes.c_ssize_t
 WPARAM = ctypes.c_size_t
 LPARAM = ctypes.c_ssize_t
@@ -81,13 +74,52 @@ class NOTIFYICONDATAW(ctypes.Structure):
     ]
 
 
+def _declare_prototypes():
+    """显式声明原型：64 位下 LPARAM/HWND 不声明会被当成 int，导致溢出或句柄被截断。"""
+    user32 = ctypes.windll.user32
+    shell32 = ctypes.windll.shell32
+
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, WPARAM, LPARAM]
+    user32.DefWindowProcW.restype = LRESULT
+
+    user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+    user32.RegisterClassW.restype = wintypes.ATOM
+
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    user32.CreateWindowExW.restype = wintypes.HWND
+
+    user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                  ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    user32.LoadIconW.restype = wintypes.HICON
+
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, WPARAM, LPARAM]
+    user32.PostQuitMessage.argtypes = [ctypes.c_int]
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+                                   wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = ctypes.c_int
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.restype = LRESULT
+
+    shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
+    shell32.Shell_NotifyIconW.restype = ctypes.c_bool
+
+
 class Tray:
     """托盘图标。事件通过 self.events 队列交给主线程。"""
 
-    def __init__(self, icon_path: str, tooltip: str, labels: dict):
+    def __init__(self, icon_path: str, tooltip: str):
         self.icon_path = icon_path
         self.tooltip = tooltip[:120]
-        self.labels = labels
         self.events: queue.Queue = queue.Queue()
         self.ready = threading.Event()
         self.failed = ""
@@ -101,6 +133,7 @@ class Tray:
     def start(self) -> bool:
         if self.failed:
             return False
+        _declare_prototypes()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self.ready.wait(3.0)
@@ -192,7 +225,10 @@ class Tray:
             if lparam == WM_LBUTTONDBLCLK:
                 self.events.put("show")
             elif lparam == WM_RBUTTONUP:
-                self._show_menu()
+                point = wintypes.POINT()
+                user32.GetCursorPos(ctypes.byref(point))
+                # 菜单交给 Tk 主线程画：系统菜单在本机主题下会渲染成空白框
+                self.events.put(("menu", point.x, point.y))
             return 0
         if msg == WM_CLOSE:
             user32.DestroyWindow(wintypes.HWND(hwnd))
@@ -202,31 +238,3 @@ class Tray:
             return 0
         return user32.DefWindowProcW(wintypes.HWND(hwnd), msg, wparam, lparam)
 
-    def _show_menu(self):
-        user32 = ctypes.windll.user32
-        menu = user32.CreatePopupMenu()
-        if not menu:
-            return
-        try:
-            user32.AppendMenuW(menu, 0, ID_SHOW, self.labels.get("show", "Show"))
-            user32.AppendMenuW(menu, 0, ID_BENCH, self.labels.get("benchmark", "Benchmark"))
-            user32.AppendMenuW(menu, 0x800, 0, None)  # MF_SEPARATOR
-            user32.AppendMenuW(menu, 0, ID_QUIT, self.labels.get("quit", "Quit"))
-
-            point = wintypes.POINT()
-            user32.GetCursorPos(ctypes.byref(point))
-            user32.SetForegroundWindow(wintypes.HWND(self._hwnd))
-            command = user32.TrackPopupMenu(
-                menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, point.x, point.y, 0,
-                wintypes.HWND(self._hwnd), None,
-            )
-            user32.PostMessageW(wintypes.HWND(self._hwnd), 0, 0, 0)
-
-            if command == ID_SHOW:
-                self.events.put("show")
-            elif command == ID_BENCH:
-                self.events.put("benchmark")
-            elif command == ID_QUIT:
-                self.events.put("quit")
-        finally:
-            user32.DestroyMenu(menu)
