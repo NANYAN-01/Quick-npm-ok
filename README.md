@@ -14,7 +14,7 @@
 
 ## 下载与运行
 
-到 [Releases](https://github.com/NANYAN-01/Quick-npm-ok/releases/latest) 下载最新的 `Quick-npm-ok-v2.3.0.exe`，双击即可运行。
+到 [Releases](https://github.com/NANYAN-01/Quick-npm-ok/releases/latest) 下载最新的 `Quick-npm-ok-v<版本>.exe`，双击即可运行。
 首次运行若被 SmartScreen 拦截，点「更多信息 → 仍要运行」。
 
 ## 界面
