@@ -158,6 +158,42 @@ class NpmrcTest(unittest.TestCase):
         rows = core.list_scoped({"mode": "project", "dir": folder})
         self.assertEqual(rows, [{"scope": "@company", "url": "https://private.example"}])
 
+    def test_project_yarnrc_v1(self):
+        folder = tempfile.mkdtemp(prefix="qno-proj-")
+        path = core.write_project_yarnrc(folder, "https://mirror.example", berry=False)
+        self.assertEqual(os.path.basename(path), ".yarnrc")
+        with open(path, encoding="utf-8") as handle:
+            self.assertIn('registry "https://mirror.example"', handle.read())
+
+    def test_project_yarnrc_berry_keeps_other_keys(self):
+        folder = tempfile.mkdtemp(prefix="qno-proj-")
+        path = os.path.join(folder, ".yarnrc.yml")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('nodeLinker: "node-modules"\nnpmRegistryServer: "https://old.example"\n')
+        core.write_project_yarnrc(folder, "https://new.example", berry=True)
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn('npmRegistryServer: "https://new.example"', text)
+        self.assertIn('nodeLinker: "node-modules"', text)
+        self.assertEqual(text.count("npmRegistryServer"), 1)
+
+    def test_yarn_project_switch_writes_project_file(self):
+        folder = tempfile.mkdtemp(prefix="qno-proj-")
+        calls = []
+        saved_major, saved_run = core.yarn_major, core.run_tool
+        core.yarn_major = lambda: 1
+        core.run_tool = lambda *args, **kwargs: calls.append(args) or None
+        try:
+            ok, error, _ = core.set_registry(
+                "yarn", "https://mirror.example", {"mode": "project", "dir": folder})
+        finally:
+            core.yarn_major, core.run_tool = saved_major, saved_run
+        self.assertTrue(ok, error)
+        with open(os.path.join(folder, ".yarnrc"), encoding="utf-8") as handle:
+            self.assertIn('registry "https://mirror.example"', handle.read())
+        # 项目级切换不能再落到全局（yarn config set 只写全局）
+        self.assertFalse([call for call in calls if call[1][:2] == ["config", "set"]])
+
 
 class ExportTest(unittest.TestCase):
     def test_rows_and_csv(self):

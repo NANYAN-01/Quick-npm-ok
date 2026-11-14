@@ -18,7 +18,12 @@ APP_NAME = "npm源测速"
 
 def force_utf8_console():
     """CI（英文代码页）下 print 中文会 UnicodeEncodeError，这里统一成 UTF-8。"""
+    safe = {"utf8", "cp936", "gbk", "gb18030", "cp950", "big5", "cp932", "shiftjis"}
     for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "").replace("_", "")
+        if encoding in safe:
+            # 中文代码页本来就显示正常，硬改成 UTF-8 反而在 936 控制台里变乱码
+            continue
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:  # noqa: BLE001

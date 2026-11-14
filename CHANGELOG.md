@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2.3.1 — 2026-11-14
+
+### 修复
+
+- **yarn 项目级切换会改到全局**：yarn 的 `config set` 只写全局配置，之前在主界面选「项目级」仍会污染全局 `.yarnrc`。现在改为直接写项目里的 `.yarnrc`（yarn 1）或 `.yarnrc.yml`（yarn 2+），全局配置不再被改动。
+- CI 打包步骤在英文代码页下输出中文会 `UnicodeEncodeError`，已强制 UTF-8。
+
+### 改进
+
+- GitHub Actions 升级到 checkout / setup-python / upload-artifact v7、action-gh-release v3，消除 Node 20 弃用告警。
+- pnpm 12 与 yarn 1.22 真机验证：全局切换、回滚、项目级写入均通过。
+
 ## 2.3.0 — 2026-11-13
 
 ### 新功能

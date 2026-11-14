@@ -742,6 +742,52 @@ def _scope_args(scope) -> tuple[list, str | None]:
     return [], None
 
 
+def _project_dir(scope) -> str:
+    scope = scope or {}
+    if scope.get("mode") == "project" and scope.get("dir"):
+        return scope["dir"]
+    return ""
+
+
+def _yarnrc_line(key: str, url: str, separator: str) -> str:
+    if separator == ":":
+        return f'{key}: "{url}"\n'
+    return f'{key} "{url}"\n'
+
+
+def _yarnrc_set(directory: str, filename: str, key: str, url: str, separator: str) -> str:
+    """按行改写 .yarnrc / .yarnrc.yml 的顶层键，保留其余内容。"""
+    path = os.path.join(directory, filename)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = list(handle)
+    except OSError:
+        lines = []
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+
+    new_line = _yarnrc_line(key, url, separator)
+    out, replaced = [], False
+    for line in lines:
+        if not replaced and line.startswith(f"{key}{separator}"):
+            out.append(new_line)
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(new_line)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.writelines(out)
+    return path
+
+
+def write_project_yarnrc(directory: str, url: str, berry: bool) -> str:
+    """yarn 的 `config set` 只写全局配置，项目级必须自己落到 .yarnrc / .yarnrc.yml。"""
+    if berry:
+        return _yarnrc_set(directory, ".yarnrc.yml", "npmRegistryServer", url, ":")
+    return _yarnrc_set(directory, ".yarnrc", "registry", url, " ")
+
+
 def yarn_major() -> int:
     try:
         proc = run_tool("yarn", ["--version"], timeout=20)
@@ -771,8 +817,22 @@ def get_registry(manager: str, scope=None) -> str:
         return ""
 
 
+def _set_yarn_project_registry(directory: str, url: str):
+    scope = {"mode": "project", "dir": directory}
+    previous = get_registry("yarn", scope)
+    try:
+        write_project_yarnrc(directory, url, yarn_major() >= 2)
+    except OSError as exc:
+        return False, str(exc), previous
+    return True, "", previous
+
+
 def set_registry(manager: str, url: str, scope=None):
     """切换源。返回 (ok, error, previous)。previous 用于失败回滚。"""
+    project = _project_dir(scope)
+    if manager == "yarn" and project:
+        return _set_yarn_project_registry(project, url)
+
     previous = get_registry(manager, scope)
     extra, cwd = _scope_args(scope)
     try:
