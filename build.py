@@ -16,12 +16,22 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = "npm源测速"
 
 
+def force_utf8_console():
+    """CI（英文代码页）下 print 中文会 UnicodeEncodeError，这里统一成 UTF-8。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run(cmd):
     print(">", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
 def main():
+    force_utf8_console()
     no_pause = "--no-pause" in sys.argv
 
     try:
