@@ -29,16 +29,20 @@ def _enable_dpi_awareness() -> None:
     try:
         import ctypes
 
-        # 2 = PER_MONITOR_AWARE_V2（Win10 1703+），失败再退回系统级
+        user32 = ctypes.windll.user32
+        # -4 = PER_MONITOR_AWARE_V2（Win10 1703+）；返回 0 表示没设成功，继续往下退
         try:
-            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-            return
+            if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                return
         except Exception:  # noqa: BLE001
             pass
         try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            # 1 = PROCESS_PER_MONITOR_DPI_AWARE（Win8.1+）
+            if ctypes.windll.shcore.SetProcessDpiAwareness(1) == 0:
+                return
         except Exception:  # noqa: BLE001
-            ctypes.windll.user32.SetProcessDPIAware()
+            pass
+        user32.SetProcessDPIAware()
     except Exception:  # noqa: BLE001
         pass
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -60,7 +61,7 @@ def format_ago(stamp: float) -> str:
 # --------------------------------------------------------------------------- #
 
 class App:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, scale: float | None = None):
         self.root = root
         self.q: queue.Queue = queue.Queue()
         self.sources = core.sources()
@@ -82,6 +83,8 @@ class App:
         self.update_info = None
         self.tray = None
         self._closing = False
+        self.scale = max(1.0, min(2.5, float(scale))) if scale else self._dpi_scale()
+        self._apply_tk_scaling()
 
         self._setup_style()
         self._build_ui()
@@ -134,10 +137,11 @@ class App:
         style.configure("CardFaint.TLabel", foreground=TEXT_FAINT, background=CARD)
         style.configure("Current.TLabel", foreground=ACCENT_DARK, font=(family, 10, "bold"))
         style.configure("Title.TLabel", font=(family, 13, "bold"))
-        style.configure("TButton", padding=(10, 4))
-        style.configure("Treeview", font=(family, 10), rowheight=30,
+        style.configure("TButton", padding=(self.px(10), self.px(4)))
+        style.configure("Treeview", font=(family, 10), rowheight=self.px(30),
                         background=CARD, fieldbackground=CARD, borderwidth=0)
-        style.configure("Treeview.Heading", font=(family, 9, "bold"), padding=(0, 6))
+        style.configure("Treeview.Heading", font=(family, 9, "bold"),
+                        padding=(0, self.px(6)))
         style.map("Treeview", background=[("selected", "#dbeafe")],
                   foreground=[("selected", "#111827")])
         style.configure("TCheckbutton", background=BG)
@@ -146,7 +150,12 @@ class App:
     def _build_ui(self):
         self.root.title(f"{tr('main.title')} v{APP_VERSION}")
         self.root.configure(bg=BG)
-        self.root.minsize(int(900 * self._dpi_scale()), int(560 * self._dpi_scale()))
+        # minsize 不能超过可用工作区，否则高缩放 + 小屏时窗口会被顶出屏幕
+        left, top, right, bottom = self.work_area()
+        self.root.minsize(
+            min(self.px(900), max(self.px(480), right - left - self.px(24))),
+            min(self.px(560), max(self.px(360), bottom - top - self.px(48))),
+        )
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(4, weight=1)
 
@@ -246,13 +255,13 @@ class App:
         }
         for key in columns:
             self.tree.heading(key, text=headings[key], anchor="center")
-        self.tree.column("rank", width=54, minwidth=48, anchor="center", stretch=False)
-        self.tree.column("name", width=124, minwidth=100, anchor="w", stretch=False)
-        self.tree.column("url", width=286, minwidth=180, anchor="w")
-        self.tree.column("latency", width=134, minwidth=110, anchor="center", stretch=False)
-        self.tree.column("speed", width=98, minwidth=86, anchor="center", stretch=False)
-        self.tree.column("sync", width=96, minwidth=80, anchor="center", stretch=False)
-        self.tree.column("status", width=104, minwidth=90, anchor="center", stretch=False)
+        self.tree.column("rank", width=self.px(54), minwidth=self.px(48), anchor="center", stretch=False)
+        self.tree.column("name", width=self.px(124), minwidth=self.px(100), anchor="w", stretch=False)
+        self.tree.column("url", width=self.px(286), minwidth=self.px(180), anchor="w")
+        self.tree.column("latency", width=self.px(134), minwidth=self.px(110), anchor="center", stretch=False)
+        self.tree.column("speed", width=self.px(98), minwidth=self.px(86), anchor="center", stretch=False)
+        self.tree.column("sync", width=self.px(96), minwidth=self.px(80), anchor="center", stretch=False)
+        self.tree.column("status", width=self.px(104), minwidth=self.px(90), anchor="center", stretch=False)
 
         self.tree.tag_configure("current", background="#eaf3ff")
         self.tree.tag_configure("best", background="#f0fbf3")
@@ -294,9 +303,16 @@ class App:
         self.btn_sources = ttk.Button(buttons, text=tr("main.sources"), command=self.open_sources)
         self.btn_sources.pack(side="left", padx=(10, 0))
 
-        self.progress = tk.Canvas(footer, width=180, height=8, bg=BG, highlightthickness=0)
-        self.progress.create_line(4, 4, 176, 4, width=5, capstyle="round", fill="#e2e8f0")
-        self.progress_fill = self.progress.create_line(4, 4, 4, 4, width=5, capstyle="round", fill=ACCENT)
+        self.progress = tk.Canvas(footer, width=self.px(180), height=self.px(8), bg=BG,
+                                  highlightthickness=0)
+        bar_pad, bar_width = self.px(4), self.px(180)
+        self._bar_pad = bar_pad
+        self._bar_span = bar_width - 2 * bar_pad
+        line_width = max(2, self.px(5))
+        self.progress.create_line(bar_pad, bar_pad, bar_width - bar_pad, bar_pad,
+                                  width=line_width, capstyle="round", fill="#e2e8f0")
+        self.progress_fill = self.progress.create_line(bar_pad, bar_pad, bar_pad, bar_pad,
+                                                       width=line_width, capstyle="round", fill=ACCENT)
         self.progress.grid(row=0, column=1, sticky="e", padx=(12, 0))
         self.progress.grid_remove()
 
@@ -343,19 +359,127 @@ class App:
         self.btn_more["menu"] = menu
 
     def _dpi_scale(self) -> float:
+        """当前显示器的缩放倍数（96 DPI = 1.0）。
+
+        Tk 的 `winfo fpixels 1i` 在 Windows 上恒为 96（它问的是系统 DPI，
+        不是显示器 DPI），所以真正的高分屏缩放下这里会一直返回 1.0。
+        需要直接问 Windows 要窗口所在显示器的 DPI。
+        """
+        dpi = 0
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                get_dpi = ctypes.windll.user32.GetDpiForWindow
+                get_dpi.argtypes = [ctypes.c_void_p]
+                get_dpi.restype = ctypes.c_uint
+                dpi = int(get_dpi(ctypes.c_void_p(self.root.winfo_id())))
+            except Exception:  # noqa: BLE001
+                dpi = 0
+        if dpi <= 0:
+            try:
+                dpi = int(round(self.root.winfo_fpixels("1i")))
+            except Exception:  # noqa: BLE001
+                dpi = 96
+        return max(1.0, min(2.5, dpi / 96.0))
+
+    def _apply_tk_scaling(self) -> None:
+        """把 Tk 的“每磅多少像素”对齐到实际 DPI，字体才会跟着一起放大。"""
         try:
-            return max(1.0, min(2.5, self.root.winfo_fpixels("1i") / 96.0))
+            self.root.tk.call("tk", "scaling", 96.0 * self.scale / 72.0)
         except Exception:  # noqa: BLE001
-            return 1.0
+            pass
+
+    def px(self, value: float) -> int:
+        """把按 96 DPI 设计的像素值换算成当前缩放下的像素。"""
+        return max(1, int(round(value * self.scale)))
+
+    def work_area(self) -> tuple:
+        """主窗口所在显示器的可用区域（去掉任务栏）。拿不到就退回整屏。"""
+        if os.name == "nt":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                                ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+                user32 = ctypes.windll.user32
+                hwnd = wintypes.HWND(self.root.winfo_id())
+                monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+                info = MONITORINFO()
+                info.cbSize = ctypes.sizeof(MONITORINFO)
+                if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                    rect = info.rcWork
+                    return rect.left, rect.top, rect.right, rect.bottom
+            except Exception:  # noqa: BLE001
+                pass
+        return 0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+
+    def place_dialog(self, dialog, min_width: int = 0, min_height: int = 0):
+        """按内容决定尺寸，再交给 Tk 自带的 tk::PlaceWindow 居中。
+
+        弹窗尺寸只要等于 `winfo_reqwidth/reqheight`，`tk::PlaceWindow` 就能算准中心，
+        所以这里不手动算 x/y；只有内容比可用区域还大时才缩到可用区域（允许拉伸），
+        最后再兜底把窗口挪回工作区内，避免压到任务栏或被屏幕边缘裁掉。
+        """
+        dialog.update_idletasks()
+        width = max(dialog.winfo_reqwidth(), self.px(min_width))
+        height = max(dialog.winfo_reqheight(), self.px(min_height))
+
+        left, top, right, bottom = self.work_area()
+        avail_w = max(self.px(320), right - left - self.px(24))
+        avail_h = max(self.px(240), bottom - top - self.px(48))
+        if width > avail_w or height > avail_h:
+            width, height = min(width, avail_w), min(height, avail_h)
+            dialog.resizable(True, True)
+
+        if width != dialog.winfo_reqwidth() or height != dialog.winfo_reqheight():
+            dialog.geometry(f"{width}x{height}")
+            dialog.update_idletasks()
+
+        try:
+            dialog.tk.call("tk::PlaceWindow", dialog._w, "widget", self.root._w)
+        except tk.TclError:
+            dialog.geometry(f"+{self.px(40)}+{self.px(40)}")
+
+        self._clamp_to_work_area(dialog, left, top, right, bottom)
+
+    def _clamp_to_work_area(self, dialog, left: int, top: int, right: int, bottom: int):
+        """把窗口矩形挪进工作区；只挪刚好超出的那段，不影响正常居中。"""
+        dialog.update_idletasks()
+        x = dialog.winfo_rootx()
+        y = dialog.winfo_rooty()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+
+        dx = 0
+        dy = 0
+        if x < left:
+            dx = left - x
+        elif x + width > right:
+            dx = right - (x + width)
+        if y < top:
+            dy = top - y
+        elif y + height > bottom:
+            dy = bottom - (y + height)
+        if not dx and not dy:
+            return
+
+        match = re.match(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", dialog.wm_geometry())
+        if not match:
+            return
+        frame_x, frame_y = int(match.group(3)), int(match.group(4))
+        dialog.geometry(f"+{frame_x + dx}+{frame_y + dy}")
 
     def _center_window(self, width: int, height: int):
         self.root.update_idletasks()
-        scale = self._dpi_scale()
-        width, height = int(width * scale), int(height * scale)
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        x = max(0, (screen_w - width) // 2)
-        y = max(0, (screen_h - height) // 3)
+        left, top, right, bottom = self.work_area()
+        width = min(self.px(width), max(self.px(480), right - left - self.px(24)))
+        height = min(self.px(height), max(self.px(320), bottom - top - self.px(48)))
+        x = left + max(0, (right - left - width) // 2)
+        y = top + max(0, (bottom - top - height) // 3)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     # ---------------- 托盘 ---------------- #
@@ -794,7 +918,9 @@ class App:
 
     def _progress_set(self, ratio: float):
         ratio = max(0.0, min(1.0, ratio))
-        self.progress.coords(self.progress_fill, 4, 4, 4 + 172 * ratio, 4)
+        pad = getattr(self, "_bar_pad", 4)
+        span = getattr(self, "_bar_span", 172)
+        self.progress.coords(self.progress_fill, pad, pad, pad + span * ratio, pad)
 
     # ---------------- 结果缓存 ---------------- #
 
@@ -1064,22 +1190,17 @@ class SourceDialog(tk.Toplevel):
         ttk.Label(wrapper, text=tr("sources.title"), style="Title.TLabel").pack(anchor="w")
         ttk.Label(wrapper, text=tr("sources.subtitle"), style="Muted.TLabel").pack(anchor="w", pady=(2, 8))
 
-        table = ttk.Frame(wrapper)
-        table.pack(fill="both", expand=True)
-
-        self.tree = ttk.Treeview(table, columns=("name", "url"), show="headings", height=8)
-        self.tree.heading("name", text=tr("sources.name"), anchor="center")
-        self.tree.heading("url", text=tr("sources.url"), anchor="center")
-        self.tree.column("name", width=150, anchor="w", stretch=False)
-        self.tree.column("url", width=430, anchor="w")
-        self.tree.pack(side="left", fill="both", expand=True)
-
-        scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
+        # 先摆底部按钮和输入行，再让表格吃掉剩余空间：窗口被压缩时按钮不会被挤没
+        buttons = ttk.Frame(wrapper)
+        buttons.pack(side="bottom", fill="x", pady=(12, 0))
+        ttk.Button(buttons, text=tr("sources.add"), command=self._add).pack(side="left")
+        ttk.Button(buttons, text=tr("sources.update"), command=self._update).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text=tr("common.delete"), command=self._delete).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text=tr("sources.restore"), command=self._restore).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text=tr("common.close"), command=self.destroy).pack(side="right")
 
         form = ttk.Frame(wrapper)
-        form.pack(fill="x", pady=(12, 0))
+        form.pack(side="bottom", fill="x", pady=(12, 0))
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text=tr("sources.name"), style="Muted.TLabel").grid(row=0, column=0, sticky="w")
@@ -1092,22 +1213,24 @@ class SourceDialog(tk.Toplevel):
         ttk.Entry(form, textvariable=self.url_var).grid(
             row=1, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
 
-        buttons = ttk.Frame(wrapper)
-        buttons.pack(fill="x", pady=(12, 0))
-        ttk.Button(buttons, text=tr("sources.add"), command=self._add).pack(side="left")
-        ttk.Button(buttons, text=tr("sources.update"), command=self._update).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text=tr("common.delete"), command=self._delete).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text=tr("sources.restore"), command=self._restore).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text=tr("common.close"), command=self.destroy).pack(side="right")
+        table = ttk.Frame(wrapper)
+        table.pack(fill="both", expand=True)
+
+        self.tree = ttk.Treeview(table, columns=("name", "url"), show="headings", height=8)
+        self.tree.heading("name", text=tr("sources.name"), anchor="center")
+        self.tree.heading("url", text=tr("sources.url"), anchor="center")
+        self.tree.column("name", width=self.app.px(150), anchor="w", stretch=False)
+        self.tree.column("url", width=self.app.px(430), anchor="w")
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
 
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self._fill()
 
-        self.update_idletasks()
-        width, height = 660, 480
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        app.place_dialog(self, min_width=600, min_height=440)
 
     def _fill(self):
         for item in self.tree.get_children():
@@ -1268,12 +1391,8 @@ class UpgradeDialog(tk.Toplevel):
         self._refresh_versions()
         self._append(tr("up.waiting"))
 
-        self.update_idletasks()
-        width, height = 620, 470
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
-        self.after(100, self._poll)
+        app.place_dialog(self, min_width=600, min_height=360)
+        self._poll_id = self.after(100, self._poll)
 
     def _refresh_versions(self):
         self.current_label.configure(text=tr("up.checking"))
@@ -1367,6 +1486,7 @@ class UpgradeDialog(tk.Toplevel):
         self.log.configure(state="disabled")
 
     def _poll(self):
+        self._poll_id = None
         try:
             while True:
                 message = self.q.get_nowait()
@@ -1381,7 +1501,17 @@ class UpgradeDialog(tk.Toplevel):
         except queue.Empty:
             pass
         if self.winfo_exists():
-            self.after(100, self._poll)
+            self._poll_id = self.after(100, self._poll)
+
+    def destroy(self):
+        if getattr(self, "_poll_id", None):
+            try:
+                self.after_cancel(self._poll_id)
+            except Exception:  # noqa: BLE001
+                pass
+            self._poll_id = None
+        self.app.dialogs.pop("upgrade", None)
+        super().destroy()
 
     def _on_close(self):
         if self.running:
@@ -1457,17 +1587,16 @@ class EnvDialog(tk.Toplevel):
 
         actions = ttk.Frame(wrapper)
         self.actions = actions
-        self.status = ttk.Label(wrapper, text="", style="Muted.TLabel")
-        self.status.pack(anchor="w", pady=(0, 6))
         self.progress = ttk.Progressbar(actions, mode="determinate", maximum=100)
         self.progress.pack(side="left", fill="x", expand=True)
         self.btn_cancel = ttk.Button(actions, text=tr("common.cancel"), command=self._cancel)
         self.btn_cancel.pack(side="left", padx=(8, 0))
         self.btn_cancel.state(["disabled"])
 
+        self.status = ttk.Label(wrapper, text="", style="Muted.TLabel")
+
         log_frame = ttk.Frame(wrapper)
         self.log_frame = log_frame
-        log_frame.pack(fill="both", expand=True)
 
         self.log = tk.Text(log_frame, height=9, wrap="none", bg="#fbfcfe", fg="#334155",
                            relief="solid", bd=1, highlightthickness=0,
@@ -1480,17 +1609,18 @@ class EnvDialog(tk.Toplevel):
         scroll.pack(side="right", fill="y")
 
         self.hint = ttk.Label(wrapper, text="", style="Faint.TLabel")
-        self.hint.pack(anchor="w", pady=(6, 0))
 
-        self.update_idletasks()
-        width, height = 700, 560
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        # 先占住底部，日志区再吃剩余高度：被压缩时抓进度条和按钮还在
+        self.hint.pack(side="bottom", anchor="w", pady=(6, 0))
+        actions.pack(side="bottom", fill="x", pady=(0, 6))
+        self.status.pack(side="bottom", anchor="w", pady=(0, 6))
+        log_frame.pack(fill="both", expand=True)
+
+        app.place_dialog(self, min_width=600, min_height=560)
 
         self._refresh_status()
         self._load_catalogs()
-        self.after(100, self._poll)
+        self._poll_id = self.after(100, self._poll)
 
         if focus:
             self.after(200, lambda: self.highlight(focus))
@@ -1638,6 +1768,7 @@ class EnvDialog(tk.Toplevel):
         self.log.configure(state="disabled")
 
     def _poll(self):
+        self._poll_id = None
         try:
             while True:
                 kind, *rest = self.q.get_nowait()
@@ -1656,9 +1787,15 @@ class EnvDialog(tk.Toplevel):
         except queue.Empty:
             pass
         if self.winfo_exists():
-            self.after(100, self._poll)
+            self._poll_id = self.after(100, self._poll)
 
     def destroy(self):
+        if getattr(self, "_poll_id", None):
+            try:
+                self.after_cancel(self._poll_id)
+            except Exception:  # noqa: BLE001
+                pass
+            self._poll_id = None
         self.app.dialogs.pop("env", None)
         super().destroy()
 
@@ -1714,12 +1851,7 @@ class AboutDialog(tk.Toplevel):
 
         ttk.Button(wrapper, text=tr("common.close"), command=self.destroy).pack(pady=(14, 0))
 
-        self.update_idletasks()
-        width = max(360, self.winfo_reqwidth())
-        height = self.winfo_reqheight()
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        app.place_dialog(self, min_width=340)
 
     def destroy(self):
         self.app.dialogs.pop("about", None)
@@ -1788,11 +1920,7 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(buttons, text=tr("common.cancel"), command=self.destroy).pack(side="right")
         ttk.Button(buttons, text=tr("common.save"), command=self._save).pack(side="right", padx=(0, 8))
 
-        self.update_idletasks()
-        width, height = max(460, self.winfo_reqwidth()), self.winfo_reqheight()
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        app.place_dialog(self, min_width=420)
 
     def _save(self):
         old_lang = core.language()
@@ -1862,8 +1990,8 @@ class ScopedDialog(tk.Toplevel):
         self.tree = ttk.Treeview(wrapper, columns=("scope", "url"), show="headings", height=6)
         self.tree.heading("scope", text="Scope", anchor="center")
         self.tree.heading("url", text=tr("sources.url"), anchor="center")
-        self.tree.column("scope", width=130, anchor="w", stretch=False)
-        self.tree.column("url", width=420, anchor="w")
+        self.tree.column("scope", width=self.app.px(130), anchor="w", stretch=False)
+        self.tree.column("url", width=self.app.px(420), anchor="w")
         self.tree.pack(fill="both", expand=True)
 
         form = ttk.Frame(wrapper)
@@ -1881,11 +2009,7 @@ class ScopedDialog(tk.Toplevel):
 
         self._fill()
 
-        self.update_idletasks()
-        width, height = 640, 420
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        app.place_dialog(self, min_width=560, min_height=360)
 
     def _fill(self):
         for item in self.tree.get_children():
@@ -1965,11 +2089,7 @@ class ProjectDialog(tk.Toplevel):
         ttk.Button(buttons, text=tr("project.write"), command=self._write).pack(side="left")
         ttk.Button(buttons, text=tr("common.close"), command=self.destroy).pack(side="right")
 
-        self.update_idletasks()
-        width, height = 620, 300
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        app.place_dialog(self, min_width=460, min_height=200)
 
     def _pick(self):
         directory = filedialog.askdirectory(title=tr("project.pick"), parent=self)
@@ -2037,9 +2157,9 @@ class HistoryDialog(tk.Toplevel):
         self.tree.heading("time", text=tr("history.col_time"), anchor="center")
         self.tree.heading("fastest", text=tr("history.col_fastest"), anchor="center")
         self.tree.heading("ok", text=tr("history.col_ok"), anchor="center")
-        self.tree.column("time", width=180, anchor="w", stretch=False)
-        self.tree.column("fastest", width=180, anchor="w")
-        self.tree.column("ok", width=90, anchor="center", stretch=False)
+        self.tree.column("time", width=self.app.px(180), anchor="w", stretch=False)
+        self.tree.column("fastest", width=self.app.px(180), anchor="w")
+        self.tree.column("ok", width=self.app.px(90), anchor="center", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
 
         scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
@@ -2063,11 +2183,7 @@ class HistoryDialog(tk.Toplevel):
         if not rows:
             self.empty.configure(text=tr("history.empty"))
 
-        self.update_idletasks()
-        width, height = 640, 460
-        x = app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2
-        y = app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        app.place_dialog(self, min_width=480, min_height=420)
 
     def destroy(self):
         self.app.dialogs.pop("history", None)
