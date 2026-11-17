@@ -59,7 +59,18 @@ def main():
           f"{len(app.sources)} vs {len(core.default_sources('pip'))}")
     check("表格已切到 pip 源", len(app.tree.get_children()) == len(app.sources))
     check("范围含虚拟环境", "虚拟环境" in app._scope_labels, str(app._scope_labels))
-    check("pip 模式下隐藏升级按钮", not app.btn_upgrade.winfo_manager())
+    check("pip 模式保留升级按钮", bool(app.btn_upgrade.winfo_manager()))
+    check("pip 模式按钮文案为升级 pip", app.btn_upgrade.cget("text") == "升级 pip",
+          app.btn_upgrade.cget("text"))
+    root.update()
+    app.open_upgrade()
+    up = app.dialogs.get("upgrade")
+    check("pip 升级对话框打开", up is not None and up.winfo_exists())
+    if up is not None:
+        check("升级对话框标题为 pip", up.title() == "升级 pip", up.title())
+        check("显示升级目标", bool(up.target_label.cget("text")), up.target_label.cget("text"))
+        root.update()
+        up.destroy()
     app.open_sources()
     pip_sources = app.dialogs.get("sources")
     check("pip 管理源打开", pip_sources is not None and pip_sources.winfo_exists())
@@ -71,6 +82,8 @@ def main():
     root.update()
     check("切回 npm 后按钮 3 个", len(app.manager_buttons) == 3, str(sorted(app.manager_buttons)))
     check("切回 npm 后显示升级按钮", bool(app.btn_upgrade.winfo_manager()))
+    check("切回 npm 后按钮文案为升级 npm", app.btn_upgrade.cget("text") == "升级 npm",
+          app.btn_upgrade.cget("text"))
 
     print("[部署对话框]")
     app.open_env()

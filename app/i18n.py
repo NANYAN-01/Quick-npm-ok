@@ -43,6 +43,7 @@ _STRINGS = {
     "main.sources": ("管理源", "Sources"),
     "main.env": ("环境…", "Setup…"),
     "main.upgrade": ("升级 npm", "Upgrade npm"),
+    "main.upgrade_pip": ("升级 pip", "Upgrade pip"),
     "main.more": ("更多", "More"),
     "main.about": ("关于", "About"),
     "main.export": ("导出", "Export"),
@@ -147,8 +148,14 @@ _STRINGS = {
 
     # ---- 升级 npm ----
     "up.title": ("升级 npm", "Upgrade npm"),
+    "up.title_pip": ("升级 pip", "Upgrade pip"),
     "up.subtitle": ("从当前 registry 下载最新版 npm 并全局安装；失败时可用管理员权限重试",
                     "Installs the latest npm from the current registry; retry as administrator if needed"),
+    "up.subtitle_pip": ("用 pip 自己安装最新版；只影响当前生效的这个 Python 环境",
+                        "Installs the latest pip into the active Python environment only"),
+    "up.target": ("升级目标", "Target"),
+    "up.pip_missing": ("未找到 pip，无法升级。可先到「环境…」里装好 Python。",
+                       "pip not found. Install Python from Setup first."),
     "up.current": ("当前版本", "Current"),
     "up.latest": ("最新版本", "Latest"),
     "up.checking": ("检测中…", "Checking…"),

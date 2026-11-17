@@ -830,6 +830,105 @@ def run_ecosystem_benchmark(eco: str, src_list, **kwargs):
     return run_benchmark(src_list, **kwargs)
 
 
+# --------------------------------------------------------------------------- #
+# pip 版本与升级
+# --------------------------------------------------------------------------- #
+
+PIP_JSON_URL = "https://pypi.org/pypi/{pkg}/json"
+
+
+def pip_latest_version(proxy=None, bases=None) -> str:
+    """最新 pip 版本：先问各镜像的 simple 页（国内快），再回退到 PyPI JSON。
+
+    顺序是有意的：国内直连 pypi.org 经常十几秒才响应，先问镜像能让
+    升级弹窗立刻出结果；拿不到再兜底官方 JSON。
+    """
+    seen = set()
+    for base in list(bases or []) + [OFFICIAL_PIP_INDEX]:
+        key = (base or "").strip().rstrip("/").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        page = pip_index_url(base)
+        html, _ttfb = fetch_text(page, timeout=8, proxy=proxy)
+        if not html:
+            continue
+        version, _wheel = parse_pip_simple(html, page)
+        if version:
+            return version
+
+    data = fetch_json(PIP_JSON_URL.format(pkg=PIP_PROBE_PKG), timeout=10, proxy=proxy)
+    if isinstance(data, dict):
+        info = data.get("info")
+        if isinstance(info, dict):
+            version = info.get("version")
+            if isinstance(version, str) and version.strip():
+                return version.strip()
+    return ""
+
+
+def find_pip(scope=None) -> str:
+    """定位要升级的那个 pip：虚拟环境优先，其次是 PATH 里的 pip / pip3。"""
+    scope = scope or {}
+    if scope.get("mode") == "project" and scope.get("dir"):
+        for parts in (("Scripts", "pip.exe"), ("bin", "pip")):
+            path = os.path.join(scope["dir"], *parts)
+            if os.path.exists(path):
+                return path
+    for name in ("pip", "pip3"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def pip_python(pip_path: str, scope=None) -> str:
+    """pip 对应的 python 解释器。
+
+    优先用 `python -m pip` 升级：Windows 上 pip 不能覆盖正在运行的 pip.exe，
+    走模块方式可以绕开这个文件占用问题。
+    """
+    scope = scope or {}
+    candidates = []
+    if scope.get("mode") == "project" and scope.get("dir"):
+        candidates += [os.path.join(scope["dir"], "Scripts", "python.exe"),
+                       os.path.join(scope["dir"], "bin", "python")]
+    if pip_path:
+        folder = os.path.dirname(pip_path)
+        # python.org 的布局：<prefix>\Scripts\pip.exe 与 <prefix>\python.exe
+        candidates += [os.path.join(folder, "python.exe"),
+                       os.path.join(folder, os.pardir, "python.exe")]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return os.path.normpath(path)
+    return ""
+
+
+def pip_upgrade_argv(scope=None):
+    """返回 (显示用命令, argv 列表)；找不到 pip 时返回 ("", None)。"""
+    pip_path = find_pip(scope)
+    if not pip_path:
+        return "", None
+    python = pip_python(pip_path, scope)
+    if python:
+        argv = [python, "-m", "pip", "install", "--upgrade", "pip"]
+    else:
+        argv = [pip_path, "install", "--upgrade", "pip"]
+    return subprocess.list2cmdline(argv), argv
+
+
+def run_command(argv, timeout: float = 30, cwd=None):
+    """按给定 argv 直接执行（路径已完整，不需要 shell 补全）。"""
+    cmd = list(argv)
+    if os.name == "nt" and cmd and cmd[0].lower().endswith((".cmd", ".bat")):
+        cmd = ["cmd", "/c"] + cmd
+    flags = CREATE_NO_WINDOW if os.name == "nt" else 0
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, creationflags=flags,
+        encoding="utf-8", errors="replace", cwd=cwd, stdin=subprocess.DEVNULL,
+    )
+
+
 def _registry_npm_version(base: str, proxy=None):
     data = fetch_json(join_url(base, "-/package/npm/dist-tags"), timeout=8, proxy=proxy)
     if isinstance(data, dict):

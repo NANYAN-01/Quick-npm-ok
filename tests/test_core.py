@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -334,6 +335,42 @@ class PipSourceTest(unittest.TestCase):
         finally:
             core.set_ecosystem("npm")
         self.assertEqual(core.ecosystem(), "npm")
+
+
+class PipUpgradeTest(unittest.TestCase):
+    def test_find_pip_prefers_venv(self):
+        folder = tempfile.mkdtemp(prefix="qno-venv-")
+        scripts = os.path.join(folder, "Scripts")
+        os.makedirs(scripts)
+        pip_exe = os.path.join(scripts, "pip.exe")
+        open(pip_exe, "w", encoding="utf-8").close()
+        self.assertEqual(core.find_pip({"mode": "project", "dir": folder}), pip_exe)
+
+    def test_upgrade_uses_python_module(self):
+        folder = tempfile.mkdtemp(prefix="qno-venv-")
+        scripts = os.path.join(folder, "Scripts")
+        os.makedirs(scripts)
+        for name in ("pip.exe", "python.exe"):
+            open(os.path.join(scripts, name), "w", encoding="utf-8").close()
+        shown, argv = core.pip_upgrade_argv({"mode": "project", "dir": folder})
+        self.assertEqual(argv[0], os.path.join(scripts, "python.exe"))
+        self.assertEqual(argv[1:], ["-m", "pip", "install", "--upgrade", "pip"])
+        self.assertIn("pip install --upgrade pip", shown)
+
+    def test_upgrade_without_python_falls_back_to_pip(self):
+        folder = tempfile.mkdtemp(prefix="qno-venv-")
+        scripts = os.path.join(folder, "Scripts")
+        os.makedirs(scripts)
+        pip_exe = os.path.join(scripts, "pip.exe")
+        open(pip_exe, "w", encoding="utf-8").close()
+        shown, argv = core.pip_upgrade_argv({"mode": "project", "dir": folder})
+        self.assertEqual(argv, [pip_exe, "install", "--upgrade", "pip"])
+        self.assertTrue(shown)
+
+    def test_upgrade_argv_empty_when_pip_missing(self):
+        with mock.patch.object(core.shutil, "which", return_value=None):
+            shown, argv = core.pip_upgrade_argv({"mode": "user", "dir": ""})
+        self.assertEqual((shown, argv), ("", None))
 
 
 class ExportTest(unittest.TestCase):

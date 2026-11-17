@@ -1,4 +1,4 @@
-# npm / pip 源测速切换器 2.4
+# npm / pip 源测速切换器 2.5
 
 [![Release](https://img.shields.io/github/v/release/NANYAN-01/Quick-npm-ok?label=release)](https://github.com/NANYAN-01/Quick-npm-ok/releases/latest)
 [![Build](https://github.com/NANYAN-01/Quick-npm-ok/actions/workflows/build.yml/badge.svg)](https://github.com/NANYAN-01/Quick-npm-ok/actions/workflows/build.yml)
@@ -40,7 +40,7 @@ Python 系（测速完成后，第一名绿色高亮）：
 | 使用最快源 | 测速后按钮直接显示第一名，点一下切换 |
 | 多包管理器 | 自动检测 npm / pnpm / yarn / pip，未安装的置灰 |
 | 管理源 | 应用内添加 / 修改 / 删除 / 恢复默认，按生态分别保存，立即生效 |
-| 升级 npm | 显示当前 / 最新版本，一键升级，带实时日志；权限不足可「以管理员身份升级」 |
+| 升级 npm / pip | 显示当前 / 最新版本，一键升级，带实时日志；权限不足可「以管理员身份升级」 |
 | 部署环境 | 一键安装 Node.js / Python / Git，版本可选，带下载进度与日志 |
 | 同步检测 | 「同步」列显示各镜像的包版本（npm / pip），落后最新版标 ⚠ |
 | 代理 | 自动读取 Windows 系统代理或 `HTTPS_PROXY`，也可手动指定 |
@@ -91,6 +91,13 @@ PyPI 没有 npm 那种 registry JSON 接口，测速链路是另一套：
 
 - 设置过环境变量 `PIP_INDEX_URL`（优先级高于任何 ini）；
 - 配置里有 `extra-index-url`（pip 会同时查询多个源，取版本更高的那个）。
+
+升级 pip：
+
+- 顶部的「升级 pip」显示当前版本、最新版本和**升级目标**（具体是哪个 `pip`）；
+- 实际执行 `python -m pip install --upgrade pip`。不用 `pip.exe` 直接升级是因为 Windows 上 pip 无法覆盖正在运行的 `pip.exe`；
+- 目标跟随当前范围：选虚拟环境就升级该环境的 pip，否则升级 PATH 里的那个；
+- 最新版本优先查 `pypi.org/pypi/pip/json`，取不到时回退到各镜像 simple 页里的最大版本。
 
 ### 部署开发环境
 

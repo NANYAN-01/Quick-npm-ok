@@ -19,6 +19,12 @@ import tkinter as tk  # noqa: E402
 from app import core  # noqa: E402
 from app.ui import App  # noqa: E402
 
+def open_upgrade(app, eco):
+    if app.ecosystem != eco:
+        app.select_ecosystem(eco)
+    app.open_upgrade()
+
+
 OPENERS = (
     ("sources", lambda a: a.open_sources()),
     ("scopes", lambda a: a.open_scopes()),
@@ -27,7 +33,8 @@ OPENERS = (
     ("settings", lambda a: a.open_settings()),
     ("about", lambda a: a.open_about()),
     ("env", lambda a: a.open_env()),
-    ("upgrade", lambda a: a.open_upgrade()),
+    ("upgrade-npm", lambda a: open_upgrade(a, "npm")),
+    ("upgrade-pip", lambda a: open_upgrade(a, "pip")),
 )
 
 

@@ -3,7 +3,7 @@
 
 APP_NAME = "npm / pip 源测速切换器"
 APP_NAME_EN = "npm / pip Mirror Speed Test"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 GITHUB_REPO = "NANYAN-01/Quick-npm-ok"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases/latest"

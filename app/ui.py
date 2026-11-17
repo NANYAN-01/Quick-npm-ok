@@ -613,7 +613,7 @@ class App:
                 cursor="arrow" if busy else "hand2",
             )
         for name, button in self.manager_buttons.items():
-            installed = core.tool_exists(name)
+            installed = core.tool_exists(name) or (name == "pip" and core.tool_exists("pip3"))
             if not installed:
                 button.config(state="disabled", bg="#f1f3f5", fg="#a3aab8", cursor="arrow")
             elif name == self.manager:
@@ -646,10 +646,9 @@ class App:
         self.open_env("python" if self.ecosystem == "pip" else "node")
 
     def _sync_upgrade_button(self):
-        if self.ecosystem == "pip":
-            if self.btn_upgrade.winfo_manager():
-                self.btn_upgrade.pack_forget()
-        elif not self.btn_upgrade.winfo_manager():
+        self.btn_upgrade.configure(
+            text=tr("main.upgrade_pip") if self.ecosystem == "pip" else tr("main.upgrade"))
+        if not self.btn_upgrade.winfo_manager():
             self.btn_upgrade.pack(side="left", padx=(10, 0), before=self.btn_env)
 
     def select_ecosystem(self, name: str):
@@ -853,8 +852,7 @@ class App:
         )
         self.btn_sources.state(["!disabled"] if idle else ["disabled"])
         self.btn_upgrade.state(
-            ["!disabled"] if idle and self.ecosystem == "npm" and core.tool_exists("npm")
-            else ["disabled"]
+            ["!disabled"] if idle and self.tool_ready() else ["disabled"]
         )
         self.scope_combo.state(["!disabled", "readonly"] if idle else ["disabled"])
 
@@ -1476,8 +1474,11 @@ class UpgradeDialog(tk.Toplevel):
         self.q: queue.Queue = queue.Queue()
         self.process = None
         self.running = False
+        self.eco = app.ecosystem
+        self.is_pip = self.eco == "pip"
+        title = tr("up.title_pip") if self.is_pip else tr("up.title")
 
-        self.title(tr("up.title"))
+        self.title(title)
         self.configure(bg=BG)
         self.transient(app.root)
         self.resizable(False, False)
@@ -1487,8 +1488,10 @@ class UpgradeDialog(tk.Toplevel):
         wrapper = ttk.Frame(self, padding=(16, 14))
         wrapper.pack(fill="both", expand=True)
 
-        ttk.Label(wrapper, text=tr("up.title"), style="Title.TLabel").pack(anchor="w")
-        ttk.Label(wrapper, text=tr("up.subtitle"), style="Muted.TLabel").pack(anchor="w", pady=(2, 10))
+        ttk.Label(wrapper, text=title, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(wrapper,
+                  text=tr("up.subtitle_pip") if self.is_pip else tr("up.subtitle"),
+                  style="Muted.TLabel").pack(anchor="w", pady=(2, 10))
 
         info = ttk.Frame(wrapper)
         info.pack(fill="x")
@@ -1501,6 +1504,16 @@ class UpgradeDialog(tk.Toplevel):
         ttk.Label(info, text=tr("up.latest"), style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.latest_label = ttk.Label(info, text=tr("up.checking"), style="Current.TLabel")
         self.latest_label.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(4, 0))
+
+        self.pip_path = ""
+        if self.is_pip:
+            self.pip_path = core.find_pip(core.scope("pip"))
+            ttk.Label(info, text=tr("up.target"), style="Muted.TLabel").grid(
+                row=2, column=0, sticky="nw", pady=(4, 0))
+            self.target_label = ttk.Label(
+                info, text=self.pip_path or tr("up.pip_missing"), style="Muted.TLabel",
+                wraplength=app.px(460), justify="left")
+            self.target_label.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(4, 0))
 
         actions = ttk.Frame(wrapper)
         actions.pack(fill="x", pady=(12, 8))
@@ -1543,13 +1556,21 @@ class UpgradeDialog(tk.Toplevel):
         app.place_dialog(self, min_width=600, min_height=360)
         self._poll_id = self.after(100, self._poll)
 
+    def _version_tool(self) -> str:
+        if not self.is_pip:
+            return "npm"
+        return "pip" if core.tool_exists("pip") else "pip3"
+
     def _refresh_versions(self):
         self.current_label.configure(text=tr("up.checking"))
         self.latest_label.configure(text=tr("up.checking"))
+        tool = self._version_tool()
+        is_pip = self.is_pip
+        bases = [item["url"] for item in self.app.sources]
 
         def worker():
-            current = core.tool_version("npm")
-            latest = core.latest_npm_version()
+            current = core.tool_version(tool)
+            latest = core.pip_latest_version(bases=bases) if is_pip else core.latest_npm_version()
             self.q.put(("versions", current, latest))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1569,11 +1590,19 @@ class UpgradeDialog(tk.Toplevel):
     def _install(self):
         if self.running:
             return
-        if not core.tool_exists("npm"):
-            messagebox.showerror(APP_NAME, tr("main.npm_missing"), parent=self)
-            return
-        cmd = "npm install -g npm@latest"
-        if not messagebox.askyesno(tr("up.title"), tr("up.confirm", cmd=cmd), parent=self):
+        if self.is_pip:
+            shown, argv = core.pip_upgrade_argv(core.scope("pip"))
+            if not argv:
+                messagebox.showerror(APP_NAME, tr("up.pip_missing"), parent=self)
+                return
+        else:
+            if not core.tool_exists("npm"):
+                messagebox.showerror(APP_NAME, tr("main.npm_missing"), parent=self)
+                return
+            shown, argv = "npm install -g npm@latest", None
+        if not messagebox.askyesno(
+                tr("up.title_pip") if self.is_pip else tr("up.title"),
+                tr("up.confirm", cmd=shown), parent=self):
             return
 
         self.running = True
@@ -1582,11 +1611,14 @@ class UpgradeDialog(tk.Toplevel):
         self.btn_recheck.state(["disabled"])
         self.status.configure(text=tr("up.running"))
         self._append("")
-        self._append("$ " + cmd)
+        self._append("$ " + shown)
 
         def worker():
             try:
-                proc = core.run_tool("npm", ["install", "-g", "npm@latest"], timeout=600)
+                if argv:
+                    proc = core.run_command(argv, timeout=900)
+                else:
+                    proc = core.run_tool("npm", ["install", "-g", "npm@latest"], timeout=600)
                 text = (proc.stdout or "").strip() or (proc.stderr or "").strip()
                 self.q.put(("install", proc.returncode, text))
             except Exception as exc:  # noqa: BLE001
@@ -1599,13 +1631,21 @@ class UpgradeDialog(tk.Toplevel):
             return
         if os.name != "nt":
             return
+        if self.is_pip:
+            shown, argv = core.pip_upgrade_argv(core.scope("pip"))
+            if not argv:
+                messagebox.showerror(APP_NAME, tr("up.pip_missing"), parent=self)
+                return
+        else:
+            shown = "npm install -g npm@latest"
+
         self._append("")
         self._append(tr("up.elevated_log"))
         self.status.configure(text=tr("up.elevated_log"))
 
         def worker():
             try:
-                deploy.run_elevated("cmd.exe", "/c npm install -g npm@latest & echo. & pause")
+                deploy.run_elevated("cmd.exe", f"/c {shown} & echo. & pause")
             except Exception:  # noqa: BLE001
                 pass
             self.q.put(("elevated_done", 0, ""))
