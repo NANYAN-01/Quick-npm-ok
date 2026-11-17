@@ -25,8 +25,11 @@ _STRINGS = {
     "common.copy": ("复制", "Copy"),
 
     # ---- 主窗口 ----
-    "main.title": ("npm 源测速切换器", "npm Mirror Speed Test"),
+    "main.title": ("npm / pip 源测速切换器", "npm / pip Mirror Speed Test"),
     "main.manager": ("包管理器", "Package manager"),
+    "main.eco_npm": ("npm 系", "npm"),
+    "main.eco_pip": ("Python 系", "Python"),
+    "main.ecosystem_switched": ("已切换到 {eco}", "Switched to {eco}"),
     "main.current": ("当前源", "Current registry"),
     "main.heading": ("镜像源测速", "Registry benchmark"),
     "main.legend": (
@@ -46,6 +49,13 @@ _STRINGS = {
     "main.scope": ("范围", "Scope"),
     "main.scope_user": ("用户级", "User"),
     "main.scope_project": ("项目级", "Project"),
+    "main.scope_venv": ("虚拟环境", "Virtualenv"),
+    "main.scope_venv_pick": ("选择虚拟环境目录…", "Choose a virtualenv folder…"),
+    "main.scope_not_venv_title": ("可能不是虚拟环境", "Possibly not a virtualenv"),
+    "main.scope_not_venv_body": (
+        "该目录下没找到 pyvenv.cfg，pip 不一定会读取这里的配置。仍要写入吗？",
+        "No pyvenv.cfg in that folder, so pip may ignore it. Write anyway?",
+    ),
     "main.select_hint": (
         "选择一行后点击「切换」，或直接双击该行",
         "Select a row and click Switch, or double-click it",
@@ -61,14 +71,14 @@ _STRINGS = {
     "main.failed_msg": ("测速过程中出错：", "Benchmark error: "),
     "main.npm_missing": ("未检测到 npm，请先安装 Node.js（测速仍可使用）",
                          "npm not found. Install Node.js to switch registries (benchmark still works)"),
+    "main.pip_missing": ("未检测到 pip，请先安装 Python（测速仍可使用）",
+                         "pip not found. Install Python to switch indexes (benchmark still works)"),
     "main.switched": ("已将 {manager} 切换到 {name}", "Switched {manager} to {name}"),    "main.switching": ("正在将 {manager} 切换到 {name}…", "Switching {manager} to {name}…"),
     "main.switch_failed": ("切换失败", "Switch failed"),
     "main.sources_updated": ("源列表已更新，重新测速即可查看排名",
                              "Source list updated. Run the benchmark again to refresh the ranking."),
     "main.cached": ("上次测速 · {when}", "Last run · {when}"),
     "main.no_registry": ("未检测到", "Not detected"),
-    "main.npm_only_hint": ("pnpm / yarn 未安装，可在「环境…」中查看",
-                           "pnpm / yarn not installed. See Setup…"),
     "main.row_info": ("{name}  {url}", "{name}  {url}"),
     "main.row_info_rank": ("{name}  {url} · 排名 {rank} · 综合 {score} 分",
                            "{name}  {url} · rank {rank} · score {score}"),
@@ -78,6 +88,20 @@ _STRINGS = {
         "npm ships with Node.js. Install it to enqueue mirrors and switch in one click.",
     ),
     "main.banner_action": ("一键安装 Node.js", "Install Node.js"),
+    "main.banner_pip_title": ("没检测到 pip", "pip not found"),
+    "main.banner_pip_body": (
+        "pip 随 Python 提供。装好 Python 后即可测速并一键切换 PyPI 源。",
+        "pip ships with Python. Install it to benchmark and switch PyPI indexes.",
+    ),
+    "main.banner_pip_action": ("一键安装 Python", "Install Python"),
+    "main.pip_env_locked": (
+        "⚠ 系统里设置了环境变量 PIP_INDEX_URL，它会覆盖 pip.ini，切换后可能看不出效果。",
+        "⚠ PIP_INDEX_URL is set and overrides pip.ini, so the switch may appear to do nothing.",
+    ),
+    "main.pip_extra_index": (
+        "⚠ 配置里存在 extra-index-url，pip 会同时查询多个源，切换后可能看不出效果。",
+        "⚠ extra-index-url is configured; pip queries several indexes, so the switch may look ineffective.",
+    ),
     "main.update_available": ("发现新版本 {version}", "New version {version}"),
     "main.update_now": ("更新", "Update"),
     "main.update_later": ("稍后", "Later"),
@@ -96,6 +120,7 @@ _STRINGS = {
 
     # ---- 管理源 ----
     "sources.title": ("管理镜像源", "Manage registries"),
+    "sources.title_eco": ("管理镜像源 · {eco}", "Manage registries · {eco}"),
     "sources.subtitle": ("双击可在下方修改；所有修改立即保存",
                          "Double-click a row to edit below. Changes save immediately."),
     "sources.name": ("名称", "Name"),
@@ -181,10 +206,10 @@ _STRINGS = {
 
     # ---- 关于 ----
     "about.title": ("关于", "About"),
-    "about.desc": ("测速常用 npm 镜像源，综合排名后一键切换。",
-                   "Benchmarks popular npm registries and switches in one click."),
-    "about.desc2": ("支持 npm / pnpm / yarn，可一键部署 Node.js、Python 与 Git。",
-                    "Works with npm, pnpm and yarn, and can set up Node.js, Python and Git."),
+    "about.desc": ("测速常用 npm 与 PyPI 镜像源，综合排名后一键切换。",
+                   "Benchmarks popular npm registries and PyPI indexes, then switches in one click."),
+    "about.desc2": ("支持 npm / pnpm / yarn 与 pip，可一键部署 Node.js、Python 与 Git。",
+                    "Works with npm, pnpm, yarn and pip, and can set up Node.js, Python and Git."),
     "about.version": ("版本 {version}", "Version {version}"),
     "about.github": ("GitHub 项目主页", "GitHub repository"),
     "about.license": ("MIT License · © 2026 {author}", "MIT License · © 2026 {author}"),

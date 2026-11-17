@@ -195,6 +195,147 @@ class NpmrcTest(unittest.TestCase):
         self.assertFalse([call for call in calls if call[1][:2] == ["config", "set"]])
 
 
+class PipSimplePageTest(unittest.TestCase):
+    HTML = (
+        '<a href="../../packages/aa/pip-24.3.1-py3-none-any.whl">old</a>'
+        '<a href="../../packages/bb/pip-25.2-py3-none-any.whl#sha256=deadbeef">new</a>'
+    )
+
+    def test_pick_newest_and_resolve(self):
+        version, url = core.parse_pip_simple(self.HTML, "https://m.example/simple/pip/")
+        self.assertEqual(version, "25.2")
+        self.assertEqual(url, "https://m.example/packages/bb/pip-25.2-py3-none-any.whl")
+
+    def test_no_wheels(self):
+        self.assertEqual(core.parse_pip_simple("<html>nothing</html>",
+                                               "https://m.example/simple/pip/"), (None, None))
+
+    def test_index_url_always_ends_with_slash(self):
+        self.assertEqual(core.pip_index_url("https://m.example/simple/"),
+                         "https://m.example/simple/pip/")
+        self.assertEqual(core.pip_index_url("https://m.example/simple"),
+                         "https://m.example/simple/pip/")
+
+
+class PipIniTest(unittest.TestCase):
+    def test_create_section(self):
+        text = core._ini_set("", "global", "index-url", "https://a.example/simple")
+        self.assertIn("[global]", text)
+        self.assertIn("index-url = https://a.example/simple", text)
+
+    def test_replace_keeps_other_keys(self):
+        text = core._ini_set(
+            "[global]\nindex-url = https://old.example/simple\ntrusted-host = x\n\n[install]\nfoo = 1\n",
+            "global", "index-url", "https://new.example/simple")
+        self.assertIn("index-url = https://new.example/simple", text)
+        self.assertIn("trusted-host = x", text)
+        self.assertIn("foo = 1", text)
+        self.assertEqual(text.count("index-url"), 1)
+
+    def test_insert_into_existing_section(self):
+        text = core._ini_set("[global]\ntrusted-host = x\n", "global", "index-url", "https://a.example")
+        lines = [line for line in text.splitlines() if line.strip()]
+        self.assertEqual(lines[0], "[global]")
+        self.assertIn("index-url = https://a.example", lines)
+        self.assertIn("trusted-host = x", lines)
+
+    def test_read_ignores_comments(self):
+        self.assertEqual(core._ini_value("[global]\n# index-url = https://x\n",
+                                         "global", "index-url"), "")
+
+    def test_venv_scope_roundtrip(self):
+        folder = tempfile.mkdtemp(prefix="qno-venv-")
+        scope = {"mode": "project", "dir": folder}
+        ok, error, previous = core.set_registry("pip", "https://mirror.example/simple", scope)
+        self.assertTrue(ok, error)
+        self.assertEqual(previous, "")
+        path = os.path.join(folder, core.PIP_INI_NAME)
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(core.read_pip_index(path), "https://mirror.example/simple")
+        self.assertEqual(core.get_registry("pip", scope), "https://mirror.example/simple")
+
+        ok, error, previous = core.set_registry("pip", "https://other.example/simple", scope)
+        self.assertTrue(ok, error)
+        self.assertEqual(previous, "https://mirror.example/simple")
+
+    def test_default_is_official_pypi(self):
+        saved_url = os.environ.pop("PIP_INDEX_URL", None)
+        saved_appdata = os.environ.get("APPDATA")
+        os.environ["APPDATA"] = tempfile.mkdtemp(prefix="qno-appdata-")
+        try:
+            folder = tempfile.mkdtemp(prefix="qno-venv-")
+            value = core.effective_pip_index({"mode": "project", "dir": folder})
+        finally:
+            if saved_url is not None:
+                os.environ["PIP_INDEX_URL"] = saved_url
+            if saved_appdata is None:
+                os.environ.pop("APPDATA", None)
+            else:
+                os.environ["APPDATA"] = saved_appdata
+        self.assertEqual(value.rstrip("/"), core.OFFICIAL_PIP_INDEX.rstrip("/"))
+
+    def test_env_index_url_wins(self):
+        saved = os.environ.get("PIP_INDEX_URL")
+        os.environ["PIP_INDEX_URL"] = "https://env.example/simple"
+        try:
+            self.assertEqual(core.effective_pip_index(), "https://env.example/simple")
+            self.assertIn("env_index_url", core.pip_warnings())
+        finally:
+            if saved is None:
+                os.environ.pop("PIP_INDEX_URL", None)
+            else:
+                os.environ["PIP_INDEX_URL"] = saved
+
+    def test_extra_index_warning(self):
+        folder = tempfile.mkdtemp(prefix="qno-venv-")
+        with open(os.path.join(folder, core.PIP_INI_NAME), "w", encoding="utf-8") as handle:
+            handle.write("[global]\nextra-index-url = https://extra.example/simple\n")
+        self.assertIn("extra_index_url",
+                      core.pip_warnings({"mode": "project", "dir": folder}))
+
+    def test_looks_like_venv(self):
+        folder = tempfile.mkdtemp(prefix="qno-venv-")
+        self.assertFalse(core.looks_like_venv(folder))
+        open(os.path.join(folder, "pyvenv.cfg"), "w", encoding="utf-8").close()
+        self.assertTrue(core.looks_like_venv(folder))
+
+
+class PipSourceTest(unittest.TestCase):
+    def setUp(self):
+        self.original_npm = [dict(item) for item in core.sources("npm")]
+        self.original_pip = [dict(item) for item in core.sources("pip")]
+
+    def tearDown(self):
+        core.set_sources(self.original_npm, "npm")
+        core.set_sources(self.original_pip, "pip")
+
+    def test_default_lists_are_separate(self):
+        pip_names = [item["name"] for item in core.default_sources("pip")]
+        npm_names = [item["name"] for item in core.default_sources("npm")]
+        self.assertIn("PyPI 官方", pip_names)
+        self.assertNotIn("淘宝 npmmirror", pip_names)
+        self.assertIn("淘宝 npmmirror", npm_names)
+
+    def test_ecosystems_are_isolated(self):
+        core.set_sources([{"name": "P", "url": "https://p.example"}], "pip")
+        self.assertEqual([item["name"] for item in core.sources("npm")],
+                         [item["name"] for item in self.original_npm])
+        self.assertEqual([item["name"] for item in core.sources("pip")], ["P"])
+
+    def test_managers_per_ecosystem(self):
+        self.assertEqual(core.managers("pip"), ("pip",))
+        self.assertIn("pnpm", core.managers("npm"))
+
+    def test_ecosystem_persisted(self):
+        core.set_ecosystem("pip")
+        try:
+            with open(os.path.join(_TMP, "config.json"), encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle)["ecosystem"], "pip")
+        finally:
+            core.set_ecosystem("npm")
+        self.assertEqual(core.ecosystem(), "npm")
+
+
 class ExportTest(unittest.TestCase):
     def test_rows_and_csv(self):
         sources = [{"name": "A", "url": "https://a"}, {"name": "B", "url": "https://b"}]

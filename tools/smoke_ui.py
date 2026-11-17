@@ -24,7 +24,7 @@ os.environ["NPM_MIRROR_TOOL_CONFIG_DIR"] = CONFIG_DIR
 import tkinter as tk  # noqa: E402
 
 from app import APP_VERSION  # noqa: E402
-from app import ui  # noqa: E402
+from app import core, ui  # noqa: E402
 
 failures = []
 
@@ -49,6 +49,28 @@ def main():
           f"{len(app.tree.get_children())} vs {len(app.sources)}")
     check("底部链接存在", app.update_link.winfo_exists() == 1)
     check("当前源已读取", app.current_label.cget("text") != "", app.current_label.cget("text"))
+
+    print("[pip 生态]")
+    app.select_ecosystem("pip")
+    root.update()
+    check("pip 管理器按钮 1 个", len(app.manager_buttons) == 1, str(sorted(app.manager_buttons)))
+    check("当前管理器为 pip", app.manager == "pip", app.manager)
+    check("pip 源数量正确", len(app.sources) == len(core.default_sources("pip")),
+          f"{len(app.sources)} vs {len(core.default_sources('pip'))}")
+    check("表格已切到 pip 源", len(app.tree.get_children()) == len(app.sources))
+    check("范围含虚拟环境", "虚拟环境" in app._scope_labels, str(app._scope_labels))
+    check("pip 模式下隐藏升级按钮", not app.btn_upgrade.winfo_manager())
+    app.open_sources()
+    pip_sources = app.dialogs.get("sources")
+    check("pip 管理源打开", pip_sources is not None and pip_sources.winfo_exists())
+    if pip_sources is not None:
+        check("pip 源列表已填充", len(pip_sources.tree.get_children()) == len(app.sources))
+        root.update()
+        pip_sources.destroy()
+    app.select_ecosystem("npm")
+    root.update()
+    check("切回 npm 后按钮 3 个", len(app.manager_buttons) == 3, str(sorted(app.manager_buttons)))
+    check("切回 npm 后显示升级按钮", bool(app.btn_upgrade.winfo_manager()))
 
     print("[部署对话框]")
     app.open_env()
@@ -84,7 +106,7 @@ def main():
     from app.i18n import keys, t
     missing = [k for k in keys() if not t(k, "zh") or not t(k, "en")]
     check("中英文案都不为空", not missing, str(missing[:5]))
-    check("英文标题可用", t("main.title", "en") == "npm Mirror Speed Test")
+    check("英文标题可用", t("main.title", "en") == "npm / pip Mirror Speed Test")
 
     print("[关闭]")
     app._closing = True

@@ -64,9 +64,10 @@ class App:
     def __init__(self, root: tk.Tk, scale: float | None = None):
         self.root = root
         self.q: queue.Queue = queue.Queue()
-        self.sources = core.sources()
+        self.ecosystem = core.ecosystem()
+        self.sources = core.sources(self.ecosystem)
         self.data = [self._empty_data() for _ in self.sources]
-        self.manager = "npm"
+        self.manager = core.managers(self.ecosystem)[0]
         self.current = ""
         self.current_index = None
         self.loading_registry = False
@@ -77,7 +78,7 @@ class App:
         self.total_steps = max(1, len(self.sources) * (core.RUNS + 2))
         self.started_at = 0.0
         self.last_run = 0.0
-        self.npm_version = ""
+        self.tool_ver = ""
         self.cancel_event = threading.Event()
         self.dialogs = {}
         self.update_info = None
@@ -90,7 +91,7 @@ class App:
         self._build_ui()
         self._refresh_manager_buttons()
         self._refresh_current()
-        self._load_npm_version()
+        self._load_tool_version()
         self._load_cache()
         self._start_tray()
 
@@ -99,8 +100,9 @@ class App:
         self.root.after(80, self._poll)
         self.root.after(400, lambda: self._check_updates(manual=False))
 
-        if not core.tool_exists("npm"):
-            self.status.configure(text=tr("main.npm_missing"))
+        if not self.tool_ready():
+            self.status.configure(text=tr("main.npm_missing" if self.ecosystem == "npm"
+                                          else "main.pip_missing"))
 
     @staticmethod
     def _empty_data():
@@ -159,36 +161,45 @@ class App:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(4, weight=1)
 
-        # --- 顶部：包管理器 + 版本 + 操作 ---
+        # --- 顶部：生态 + 包管理器 + 版本 + 操作 ---
         top = ttk.Frame(self.root, padding=(18, 12, 18, 2))
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(2, weight=1)
+        top.columnconfigure(3, weight=1)
 
-        ttk.Label(top, text=tr("main.manager"), style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-
-        self.manager_buttons = {}
-        segment = ttk.Frame(top)
-        segment.grid(row=0, column=1, sticky="w", padx=(10, 0))
-        for position, name in enumerate(core.MANAGERS):
+        self.eco_buttons = {}
+        eco_box = ttk.Frame(top)
+        eco_box.grid(row=0, column=0, sticky="w")
+        for position, name in enumerate(core.ECOSYSTEMS):
             button = tk.Button(
-                segment, text=name, command=lambda n=name: self.select_manager(n),
-                relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
+                eco_box, text=tr(f"main.eco_{name}"),
+                command=lambda n=name: self.select_ecosystem(n),
+                relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
                 font=(self.font_family, 9, "bold"),
                 disabledforeground="#a3aab8",
             )
-            button.pack(side="left", padx=(0 if position == 0 else 5, 0))
-            self.manager_buttons[name] = button
+            button.pack(side="left", padx=(0 if position == 0 else 4, 0))
+            self.eco_buttons[name] = button
+
+        ttk.Separator(top, orient="vertical").grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        ttk.Label(top, text=tr("main.manager"), style="Muted.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(12, 0))
+
+        self.manager_segment = ttk.Frame(top)
+        self.manager_segment.grid(row=0, column=3, sticky="w", padx=(10, 0))
+        self._build_manager_buttons()
 
         right = ttk.Frame(top)
-        right.grid(row=0, column=3, sticky="e")
-        self.npm_version_label = ttk.Label(right, text="npm …", style="Muted.TLabel")
-        self.npm_version_label.pack(side="left")
+        right.grid(row=0, column=4, sticky="e")
+        self.version_label = ttk.Label(right, text="…", style="Muted.TLabel")
+        self.version_label.pack(side="left")
         self.btn_upgrade = ttk.Button(right, text=tr("main.upgrade"), command=self.open_upgrade)
         self.btn_upgrade.pack(side="left", padx=(10, 0))
-        ttk.Button(right, text=tr("main.env"), command=self.open_env).pack(side="left", padx=(6, 0))
+        self.btn_env = ttk.Button(right, text=tr("main.env"), command=self.open_env)
+        self.btn_env.pack(side="left", padx=(6, 0))
         self.btn_more = ttk.Menubutton(right, text=tr("main.more"))
         self.btn_more.pack(side="left", padx=(6, 0))
         self._build_more_menu()
+        self._sync_upgrade_button()
 
         # --- 缺 npm 提示条 ---
         self.banner = tk.Frame(self.root, bg=WARN_BG, highlightbackground=WARN_BORDER,
@@ -199,14 +210,19 @@ class App:
                  font=(self.font_family, 11, "bold")).grid(row=0, column=0, padx=(12, 6), pady=8)
         inner = tk.Frame(self.banner, bg=WARN_BG)
         inner.grid(row=0, column=1, sticky="w")
-        tk.Label(inner, text=tr("main.banner_title"), bg=WARN_BG, fg="#92400e",
-                 font=(self.font_family, 10, "bold")).pack(anchor="w")
-        tk.Label(inner, text=tr("main.banner_body"), bg=WARN_BG, fg="#92400e",
-                 font=(self.font_family, 9)).pack(anchor="w")
-        tk.Button(self.banner, text=tr("main.banner_action"), command=lambda: self.open_env("node"),
-                  bg="#f59e0b", fg="white", activebackground="#d97706", activeforeground="white",
-                  relief="flat", bd=0, padx=12, pady=4, cursor="hand2",
-                  font=(self.font_family, 9, "bold")).grid(row=0, column=2, padx=12)
+        self.banner_title = tk.Label(inner, text="", bg=WARN_BG, fg="#92400e",
+                                     font=(self.font_family, 10, "bold"))
+        self.banner_title.pack(anchor="w")
+        self.banner_body = tk.Label(inner, text="", bg=WARN_BG, fg="#92400e",
+                                    font=(self.font_family, 9))
+        self.banner_body.pack(anchor="w")
+        self.banner_action = tk.Button(self.banner, text="", command=self._banner_action,
+                                       bg="#f59e0b", fg="white", activebackground="#d97706",
+                                       activeforeground="white", relief="flat", bd=0,
+                                       padx=12, pady=4, cursor="hand2",
+                                       font=(self.font_family, 9, "bold"))
+        self.banner_action.grid(row=0, column=2, padx=12)
+        self._sync_banner_text()
         self.banner.grid_remove()
 
         # --- 当前源 + 范围 ---
@@ -236,7 +252,7 @@ class App:
         ttk.Label(
             head,
             text=tr("main.legend", lat=int(core.LATENCY_WEIGHT * 100),
-                    spd=int(core.SPEED_WEIGHT * 100), runs=core.RUNS, pkg=core.SPEED_PKG),
+                    spd=int(core.SPEED_WEIGHT * 100), runs=core.RUNS, pkg=self.probe_label()),
             style="Muted.TLabel",
         ).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(4, 0))
 
@@ -257,11 +273,11 @@ class App:
             self.tree.heading(key, text=headings[key], anchor="center")
         self.tree.column("rank", width=self.px(54), minwidth=self.px(48), anchor="center", stretch=False)
         self.tree.column("name", width=self.px(124), minwidth=self.px(100), anchor="w", stretch=False)
-        self.tree.column("url", width=self.px(286), minwidth=self.px(180), anchor="w")
-        self.tree.column("latency", width=self.px(134), minwidth=self.px(110), anchor="center", stretch=False)
-        self.tree.column("speed", width=self.px(98), minwidth=self.px(86), anchor="center", stretch=False)
-        self.tree.column("sync", width=self.px(96), minwidth=self.px(80), anchor="center", stretch=False)
-        self.tree.column("status", width=self.px(104), minwidth=self.px(90), anchor="center", stretch=False)
+        self.tree.column("url", width=self.px(320), minwidth=self.px(180), anchor="w")
+        self.tree.column("latency", width=self.px(128), minwidth=self.px(110), anchor="center", stretch=False)
+        self.tree.column("speed", width=self.px(96), minwidth=self.px(86), anchor="center", stretch=False)
+        self.tree.column("sync", width=self.px(88), minwidth=self.px(80), anchor="center", stretch=False)
+        self.tree.column("status", width=self.px(98), minwidth=self.px(90), anchor="center", stretch=False)
 
         self.tree.tag_configure("current", background="#eaf3ff")
         self.tree.tag_configure("best", background="#f0fbf3")
@@ -559,8 +575,43 @@ class App:
     def _busy(self):
         return self.testing or self.switching
 
+    def probe_label(self) -> str:
+        return "pip wheel" if self.ecosystem == "pip" else core.SPEED_PKG
+
+    def tool_name(self) -> str:
+        return "pip" if self.ecosystem == "pip" else "npm"
+
+    def tool_ready(self) -> bool:
+        if self.ecosystem == "pip":
+            return core.tool_exists("pip") or core.tool_exists("pip3")
+        return core.tool_exists("npm")
+
+    def _build_manager_buttons(self):
+        for child in self.manager_segment.winfo_children():
+            child.destroy()
+        self.manager_buttons = {}
+        for position, name in enumerate(core.managers(self.ecosystem)):
+            button = tk.Button(
+                self.manager_segment, text=name, command=lambda n=name: self.select_manager(n),
+                relief="flat", bd=0, padx=14, pady=4, cursor="hand2",
+                font=(self.font_family, 9, "bold"),
+                disabledforeground="#a3aab8",
+            )
+            button.pack(side="left", padx=(0 if position == 0 else 5, 0))
+            self.manager_buttons[name] = button
+
     def _refresh_manager_buttons(self):
         busy = self._busy()
+        for name, button in self.eco_buttons.items():
+            active = name == self.ecosystem
+            button.config(
+                state="disabled" if busy else "normal",
+                bg="#9ec5ff" if busy and active else (ACCENT if active else "#eaeef4"),
+                fg="#f5f9ff" if busy and active else ("white" if active else "#374151"),
+                activebackground=ACCENT_DARK if active else "#dfe6ef",
+                activeforeground="white" if active else "#111827",
+                cursor="arrow" if busy else "hand2",
+            )
         for name, button in self.manager_buttons.items():
             installed = core.tool_exists(name)
             if not installed:
@@ -581,6 +632,52 @@ class App:
                     cursor="hand2",
                 )
 
+    def _sync_banner_text(self):
+        if self.ecosystem == "pip":
+            title, body, action = ("main.banner_pip_title", "main.banner_pip_body",
+                                   "main.banner_pip_action")
+        else:
+            title, body, action = "main.banner_title", "main.banner_body", "main.banner_action"
+        self.banner_title.configure(text=tr(title))
+        self.banner_body.configure(text=tr(body))
+        self.banner_action.configure(text=tr(action))
+
+    def _banner_action(self):
+        self.open_env("python" if self.ecosystem == "pip" else "node")
+
+    def _sync_upgrade_button(self):
+        if self.ecosystem == "pip":
+            if self.btn_upgrade.winfo_manager():
+                self.btn_upgrade.pack_forget()
+        elif not self.btn_upgrade.winfo_manager():
+            self.btn_upgrade.pack(side="left", padx=(10, 0), before=self.btn_env)
+
+    def select_ecosystem(self, name: str):
+        if self._busy() or name == self.ecosystem or name not in core.ECOSYSTEMS:
+            return
+        core.set_ecosystem(name)
+        self.ecosystem = name
+        self.sources = core.sources(name)
+        self.manager = core.managers(name)[0]
+        self.data = [self._empty_data() for _ in self.sources]
+        self.current = ""
+        self.current_index = None
+        self.fastest_index = None
+        self.last_run = 0.0
+        self.tool_ver = ""
+        self.btn_fastest.config(text=tr("main.fastest"))
+        self.total_steps = max(1, len(self.sources) * (core.RUNS + 2))
+        self._build_manager_buttons()
+        self._refresh_manager_buttons()
+        self._sync_scope_combo()
+        self._sync_banner_text()
+        self._sync_upgrade_button()
+        self._rebuild_rows()
+        self._refresh_current()
+        self._load_tool_version()
+        self._load_cache()
+        self.status.configure(text=tr("main.ecosystem_switched", eco=tr(f"main.eco_{name}")))
+
     def select_manager(self, name: str):
         if self._busy() or name == self.manager:
             return
@@ -593,22 +690,27 @@ class App:
         self.loading_registry = True
         self.current_label.configure(text=tr("common.loading"))
         self._clear_current_tags()
-        threading.Thread(target=self._read_registry_worker, args=(name,), daemon=True).start()
+        threading.Thread(target=self._read_registry_worker,
+                         args=(name, self.ecosystem), daemon=True).start()
 
-    def _read_registry_worker(self, manager: str):
-        value = core.get_registry(manager, core.get("scope"))
-        self.q.put(("registry", manager, value))
+    def _read_registry_worker(self, manager: str, eco: str):
+        value = core.get_registry(manager, core.scope(eco))
+        self.q.put(("registry", eco, manager, value))
 
-    def _load_npm_version(self):
+    def _load_tool_version(self):
+        eco, tool = self.ecosystem, self.tool_name()
+
         def worker():
-            self.q.put(("npm_version", core.tool_version("npm")))
+            self.q.put(("tool_version", eco, core.tool_version(tool)))
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_current(self):
         if not self.current:
             self.loading_registry = True
             self.current_label.configure(text=tr("common.loading"))
-            threading.Thread(target=self._read_registry_worker, args=(self.manager,), daemon=True).start()
+            threading.Thread(target=self._read_registry_worker,
+                             args=(self.manager, self.ecosystem), daemon=True).start()
         self._apply_current()
 
     def _apply_current(self):
@@ -648,25 +750,37 @@ class App:
         return tuple(tags)
 
     def _sync_scope_combo(self):
-        scope = core.get("scope") or {}
-        mode = "project" if scope.get("mode") == "project" and scope.get("dir") else "user"
-        self.scope_var.set(tr("main.scope_project") if mode == "project" else tr("main.scope_user"))
+        if self.ecosystem == "pip":
+            self._scope_labels = [tr("main.scope_user"), tr("main.scope_venv")]
+        else:
+            self._scope_labels = [tr("main.scope_user"), tr("main.scope_project")]
+        self.scope_combo.configure(values=self._scope_labels)
+        scope = core.scope(self.ecosystem)
+        use_project = scope.get("mode") == "project" and scope.get("dir")
+        self.scope_var.set(self._scope_labels[1] if use_project else self._scope_labels[0])
 
     def _on_scope_change(self, _event=None):
-        want_project = self.scope_var.get() == tr("main.scope_project")
-        scope = dict(core.get("scope") or {})
+        labels = getattr(self, "_scope_labels", [])
+        want_project = len(labels) > 1 and self.scope_var.get() == labels[1]
+        value = {"mode": "user", "dir": ""}
         if want_project:
-            directory = filedialog.askdirectory(title=tr("project.pick"))
+            pip_mode = self.ecosystem == "pip"
+            title = tr("main.scope_venv_pick") if pip_mode else tr("project.pick")
+            directory = filedialog.askdirectory(title=title)
             if not directory:
                 self._sync_scope_combo()
                 return
-            scope = {"mode": "project", "dir": directory}
-        else:
-            scope = {"mode": "user", "dir": ""}
-        core.set_value("scope", scope)
+            if pip_mode and not core.looks_like_venv(directory):
+                if not messagebox.askyesno(tr("main.scope_not_venv_title"),
+                                           tr("main.scope_not_venv_body"),
+                                           parent=self.root):
+                    self._sync_scope_combo()
+                    return
+            value = {"mode": "project", "dir": directory}
+        core.set_scope(value, self.ecosystem)
         self.current = ""
         self._refresh_current()
-        self.status.configure(text=scope.get("dir") or tr("main.scope_user"))
+        self.status.configure(text=value.get("dir") or tr("main.scope_user"))
 
     # ---------------- 表格 ---------------- #
 
@@ -703,7 +817,7 @@ class App:
                 sync = f'✓ {data["version"]}'
 
         if data["ok"]:
-            status = "✓"
+            status = f'⚠ {data["error"]}' if data["error"] else "✓"
         elif data["error"]:
             status = f'✗ {data["error"]}'
         else:
@@ -738,7 +852,10 @@ class App:
             ["!disabled"] if idle and self.fastest_index is not None else ["disabled"]
         )
         self.btn_sources.state(["!disabled"] if idle else ["disabled"])
-        self.btn_upgrade.state(["!disabled"] if idle and core.tool_exists("npm") else ["disabled"])
+        self.btn_upgrade.state(
+            ["!disabled"] if idle and self.ecosystem == "npm" and core.tool_exists("npm")
+            else ["disabled"]
+        )
         self.scope_combo.state(["!disabled", "readonly"] if idle else ["disabled"])
 
     def _set_busy(self, busy: bool, switching: bool = False):
@@ -795,8 +912,8 @@ class App:
     def _bench_worker(self):
         try:
             proxy = core.detect_proxy()
-            results = core.run_benchmark(
-                self.sources, proxy=proxy,
+            results = core.run_ecosystem_benchmark(
+                self.ecosystem, self.sources, proxy=proxy,
                 emit=lambda *args: self.q.put(args),
                 cancel=self.cancel_event,
             )
@@ -836,14 +953,16 @@ class App:
                     self.status.configure(text=tr("main.failed"))
                     messagebox.showerror(APP_NAME, f"{tr('main.failed_msg')}\n{rest[0]}")
                 elif kind == "registry":
-                    manager, value = rest
-                    if manager == self.manager:
+                    eco, manager, value = rest
+                    if eco == self.ecosystem and manager == self.manager:
                         self.loading_registry = False
                         self.current = value
                         self._apply_current()
-                elif kind == "npm_version":
-                    self.npm_version = rest[0]
-                    self._apply_npm_version()
+                elif kind == "tool_version":
+                    eco, value = rest
+                    if eco == self.ecosystem:
+                        self.tool_ver = value
+                        self._apply_tool_version()
                 elif kind == "switched":
                     self._on_switched(*rest)
                 elif kind == "update":
@@ -858,18 +977,22 @@ class App:
         self._drain_tray()
         self.root.after(80, self._poll)
 
-    def _apply_npm_version(self):
-        has_npm = core.tool_exists("npm")
-        if self.npm_version:
-            self.npm_version_label.configure(text=f"npm v{self.npm_version}")
-        elif has_npm:
-            self.npm_version_label.configure(text="npm …")
+    def _apply_tool_version(self):
+        tool = self.tool_name()
+        ready = self.tool_ready()
+        if self.tool_ver:
+            self.version_label.configure(text=f"{tool} v{self.tool_ver}")
+        elif ready:
+            self.version_label.configure(text=f"{tool} …")
         else:
-            self.npm_version_label.configure(text=tr("env.node_missing"))
+            self.version_label.configure(
+                text=tr("env.node_missing") if tool == "npm" else tr("main.banner_pip_title")
+            )
 
-        if has_npm:
+        if ready:
             self.banner.grid_remove()
         else:
+            self._sync_banner_text()
             self.banner.grid()
 
     def _reorder_by_rank(self):
@@ -924,11 +1047,15 @@ class App:
 
     # ---------------- 结果缓存 ---------------- #
 
+    def _cache_path(self) -> str:
+        return core.data_path("last-pip.json" if self.ecosystem == "pip" else "last.json")
+
     def _save_cache(self):
-        payload = {"time": self.last_run, "sources": self.sources, "results": self.data}
+        payload = {"ecosystem": self.ecosystem, "time": self.last_run,
+                   "sources": self.sources, "results": self.data}
         try:
             import json
-            with open(core.data_path("last.json"), "w", encoding="utf-8") as handle:
+            with open(self._cache_path(), "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False)
         except OSError:
             pass
@@ -936,11 +1063,13 @@ class App:
     def _load_cache(self):
         try:
             import json
-            with open(core.data_path("last.json"), encoding="utf-8") as handle:
+            with open(self._cache_path(), encoding="utf-8") as handle:
                 payload = json.load(handle)
         except (OSError, ValueError):
             return
         if not isinstance(payload, dict):
+            return
+        if payload.get("ecosystem", "npm") != self.ecosystem:
             return
         if normalize(json.dumps(payload.get("sources"), sort_keys=True)) != normalize(
                 json.dumps(self.sources, sort_keys=True)):
@@ -975,7 +1104,8 @@ class App:
             return
         source = self.sources[index]
         manager = self.manager
-        scope = dict(core.get("scope") or {})
+        eco = self.ecosystem
+        scope = core.scope(eco)
         self._set_busy(True, switching=True)
         self.status.configure(text=tr("main.switching", manager=manager, name=source["name"]))
 
@@ -983,11 +1113,12 @@ class App:
             ok, error, previous = core.set_registry(manager, source["url"], scope)
             if not ok and previous:
                 core.rollback_registry(manager, previous, scope)
-            self.q.put(("switched", manager, source["name"], source["url"], ok, error, previous))
+            self.q.put(("switched", manager, source["name"], source["url"],
+                        ok, error, previous, eco))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_switched(self, manager, name, url, ok, error, previous=""):
+    def _on_switched(self, manager, name, url, ok, error, previous="", eco=None):
         self._set_busy(False)
         if not ok:
             self.status.configure(text=tr("main.switch_failed"))
@@ -997,6 +1128,18 @@ class App:
         self._apply_current()
         self.status.configure(text=tr("main.switched", manager=manager, name=name))
         messagebox.showinfo(APP_NAME, f"{tr('main.switched', manager=manager, name=name)}\n{url}")
+        if (eco or self.ecosystem) == "pip":
+            self._warn_pip_overrides()
+
+    def _warn_pip_overrides(self):
+        codes = core.pip_warnings(core.scope("pip"))
+        messages = []
+        if "env_index_url" in codes:
+            messages.append(tr("main.pip_env_locked"))
+        if "env_extra_index" in codes or "extra_index_url" in codes:
+            messages.append(tr("main.pip_extra_index"))
+        if messages:
+            messagebox.showwarning(APP_NAME, "\n\n".join(messages))
 
     # ---------------- 源管理 ---------------- #
 
@@ -1010,11 +1153,14 @@ class App:
             return
         self.dialogs["sources"] = SourceDialog(self)
 
-    def update_sources(self, items):
-        ok, error = core.set_sources(items)
+    def update_sources(self, items, eco=None):
+        eco = eco or self.ecosystem
+        ok, error = core.set_sources(items, eco)
         if not ok:
             messagebox.showerror(APP_NAME, f"{tr('sources.save_failed')}\n{error}")
-        self.sources = core.sources()
+        if eco != self.ecosystem:
+            return
+        self.sources = core.sources(eco)
         self.fastest_index = None
         self.btn_fastest.config(text=tr("main.fastest"))
         self._rebuild_rows()
@@ -1048,7 +1194,7 @@ class App:
 
     def refresh_tool_state(self):
         self._refresh_manager_buttons()
-        self._load_npm_version()
+        self._load_tool_version()
         self.current = ""
         self._refresh_current()
 
@@ -1176,8 +1322,11 @@ class SourceDialog(tk.Toplevel):
     def __init__(self, app: App):
         super().__init__(app.root)
         self.app = app
+        self.ecosystem = app.ecosystem
         self.sources = [dict(item) for item in app.sources]
-        self.title(tr("sources.title"))
+        eco_label = tr(f"main.eco_{self.ecosystem}")
+        title = tr("sources.title_eco", eco=eco_label)
+        self.title(title)
         self.configure(bg=BG)
         self.transient(app.root)
         self.grab_set()
@@ -1187,7 +1336,7 @@ class SourceDialog(tk.Toplevel):
         wrapper = ttk.Frame(self, padding=(16, 14))
         wrapper.pack(fill="both", expand=True)
 
-        ttk.Label(wrapper, text=tr("sources.title"), style="Title.TLabel").pack(anchor="w")
+        ttk.Label(wrapper, text=title, style="Title.TLabel").pack(anchor="w")
         ttk.Label(wrapper, text=tr("sources.subtitle"), style="Muted.TLabel").pack(anchor="w", pady=(2, 8))
 
         # 先摆底部按钮和输入行，再让表格吃掉剩余空间：窗口被压缩时按钮不会被挤没
@@ -1265,7 +1414,7 @@ class SourceDialog(tk.Toplevel):
 
     def _commit(self, message: str):
         self._fill()
-        self.app.update_sources(self.sources)
+        self.app.update_sources(self.sources, self.ecosystem)
         self.app.status.configure(text=message)
 
     def _add(self):
@@ -1312,7 +1461,7 @@ class SourceDialog(tk.Toplevel):
     def _restore(self):
         if not messagebox.askyesno(tr("sources.restore_title"), tr("sources.restore_body"), parent=self):
             return
-        self.sources = [dict(item) for item in core.DEFAULT_SOURCES]
+        self.sources = [dict(item) for item in core.default_sources(self.ecosystem)]
         self._commit(tr("sources.restored"))
 
 
@@ -1414,8 +1563,8 @@ class UpgradeDialog(tk.Toplevel):
                 self.latest_label.configure(text=f"v{latest}")
         else:
             self.latest_label.configure(text=tr("up.failed"))
-        self.app.npm_version = current
-        self.app._apply_npm_version()
+        self.app.tool_ver = current
+        self.app._apply_tool_version()
 
     def _install(self):
         if self.running:
@@ -1473,7 +1622,7 @@ class UpgradeDialog(tk.Toplevel):
             self._append("")
             self._append(tr("up.done_log"))
             self._refresh_versions()
-            self.app._load_npm_version()
+            self.app._load_tool_version()
         else:
             self.status.configure(text=tr("up.fail"))
             self._append("")
@@ -2014,7 +2163,7 @@ class ScopedDialog(tk.Toplevel):
     def _fill(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for index, row in enumerate(core.list_scoped(core.get("scope"))):
+        for index, row in enumerate(core.list_scoped(core.scope("npm"))):
             self.tree.insert("", "end", iid=str(index), values=(row["scope"], row["url"]))
 
     def _add(self):
@@ -2026,7 +2175,7 @@ class ScopedDialog(tk.Toplevel):
         if not url.lower().startswith(("http://", "https://")):
             messagebox.showerror(APP_NAME, tr("sources.bad_url"), parent=self)
             return
-        ok, error = core.set_scoped(scope, url, core.get("scope"))
+        ok, error = core.set_scoped(scope, url, core.scope("npm"))
         if not ok:
             messagebox.showerror(APP_NAME, error, parent=self)
             return
@@ -2037,8 +2186,8 @@ class ScopedDialog(tk.Toplevel):
         selection = self.tree.selection()
         if not selection:
             return
-        row = core.list_scoped(core.get("scope"))[int(selection[0])]
-        core.remove_scoped(row["scope"], core.get("scope"))
+        row = core.list_scoped(core.scope("npm"))[int(selection[0])]
+        core.remove_scoped(row["scope"], core.scope("npm"))
         self._fill()
 
     def destroy(self):

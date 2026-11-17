@@ -29,6 +29,10 @@ from . import APP_VERSION
 # --------------------------------------------------------------------------- #
 
 MANAGERS = ("npm", "pnpm", "yarn")
+PIP_MANAGERS = ("pip",)
+
+ECOSYSTEMS = ("npm", "pip")
+ECOSYSTEM_MANAGERS = {"npm": MANAGERS, "pip": PIP_MANAGERS}
 
 DEFAULT_SOURCES = [
     {"name": "华为云", "url": "https://repo.huaweicloud.com/repository/npm/"},
@@ -40,6 +44,21 @@ DEFAULT_SOURCES = [
 ]
 
 OFFICIAL_REGISTRY = "https://registry.npmjs.org/"
+
+DEFAULT_PIP_SOURCES = [
+    {"name": "清华 TUNA", "url": "https://pypi.tuna.tsinghua.edu.cn/simple"},
+    {"name": "阿里云", "url": "https://mirrors.aliyun.com/pypi/simple"},
+    {"name": "腾讯云", "url": "https://mirrors.cloud.tencent.com/pypi/simple"},
+    {"name": "华为云", "url": "https://repo.huaweicloud.com/repository/pypi/simple"},
+    {"name": "中科大", "url": "https://mirrors.ustc.edu.cn/pypi/simple"},
+    {"name": "南京大学", "url": "https://mirror.nju.edu.cn/pypi/web/simple"},
+    {"name": "上海交大", "url": "https://mirror.sjtu.edu.cn/pypi/web/simple"},
+    {"name": "PyPI 官方", "url": "https://pypi.org/simple"},
+]
+
+OFFICIAL_PIP_INDEX = "https://pypi.org/simple/"
+PIP_PROBE_PKG = "pip"
+PIP_INI_NAME = "pip.ini" if os.name == "nt" else "pip.conf"
 
 LATENCY_PKG = "react"
 SPEED_PKG = "webpack"
@@ -63,12 +82,15 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 DEFAULTS = {
     "language": "zh",
+    "ecosystem": "npm",
     "proxy": {"mode": "auto", "url": ""},
     "scope": {"mode": "user", "dir": ""},
+    "pip_scope": {"mode": "user", "dir": ""},
     "tray": True,
     "autostart": False,
     "update_check": True,
     "sources": [],
+    "pip_sources": [],
 }
 
 # --------------------------------------------------------------------------- #
@@ -144,18 +166,25 @@ def config() -> dict:
     if not merged.get("sources"):
         merged["sources"] = _load_legacy_sources() or [dict(item) for item in DEFAULT_SOURCES]
 
-    cleaned = []
-    for item in merged["sources"]:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "")).strip()
-        url = str(item.get("url", "")).strip()
-        if name and url.lower().startswith(("http://", "https://")):
-            cleaned.append({"name": name, "url": url})
-    merged["sources"] = cleaned or [dict(item) for item in DEFAULT_SOURCES]
+    merged["sources"] = _clean_sources(merged["sources"], DEFAULT_SOURCES)
+    merged["pip_sources"] = _clean_sources(merged["pip_sources"], DEFAULT_PIP_SOURCES)
+    if merged.get("ecosystem") not in ECOSYSTEMS:
+        merged["ecosystem"] = "npm"
 
     _config = merged
     return _config
+
+
+def _clean_sources(items, fallback) -> list:
+    cleaned = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        url = str(item.get("url", "")).strip().rstrip("/")
+        if name and url.lower().startswith(("http://", "https://")):
+            cleaned.append({"name": name, "url": url})
+    return cleaned or [dict(item) for item in fallback]
 
 
 def save_config() -> tuple[bool, str]:
@@ -176,18 +205,60 @@ def set_value(key, value) -> tuple[bool, str]:
     return save_config()
 
 
-def sources() -> list:
-    return config()["sources"]
+def sources(eco=None) -> list:
+    eco = eco if eco in ECOSYSTEMS else ecosystem()
+    return config()["pip_sources" if eco == "pip" else "sources"]
 
 
-def set_sources(items) -> tuple[bool, str]:
+def set_sources(items, eco=None) -> tuple[bool, str]:
+    eco = eco if eco in ECOSYSTEMS else ecosystem()
     cleaned = []
     for item in items:
         name = str(item.get("name", "")).strip()
         url = str(item.get("url", "")).strip().rstrip("/")
         if name and url.lower().startswith(("http://", "https://")):
             cleaned.append({"name": name, "url": url})
-    config()["sources"] = cleaned
+    config()["pip_sources" if eco == "pip" else "sources"] = cleaned
+    return save_config()
+
+
+def default_sources(eco=None) -> list:
+    eco = eco if eco in ECOSYSTEMS else ecosystem()
+    base = DEFAULT_PIP_SOURCES if eco == "pip" else DEFAULT_SOURCES
+    return [dict(item) for item in base]
+
+
+def managers(eco=None) -> tuple:
+    eco = eco if eco in ECOSYSTEMS else ecosystem()
+    return ECOSYSTEM_MANAGERS.get(eco, MANAGERS)
+
+
+def ecosystem() -> str:
+    value = get("ecosystem")
+    return value if value in ECOSYSTEMS else "npm"
+
+
+def set_ecosystem(name: str) -> tuple[bool, str]:
+    if name not in ECOSYSTEMS:
+        return False, "unknown ecosystem"
+    config()["ecosystem"] = name
+    return save_config()
+
+
+def scope(eco=None) -> dict:
+    """当前生态的作用域设置（npm: user/project；pip: user/venv）。"""
+    eco = eco if eco in ECOSYSTEMS else ecosystem()
+    key = "pip_scope" if eco == "pip" else "scope"
+    value = dict(config().get(key) or {})
+    if value.get("mode") == "project" and value.get("dir"):
+        return {"mode": "project", "dir": str(value["dir"])}
+    return {"mode": "user", "dir": ""}
+
+
+def set_scope(value: dict, eco=None) -> tuple[bool, str]:
+    eco = eco if eco in ECOSYSTEMS else ecosystem()
+    key = "pip_scope" if eco == "pip" else "scope"
+    config()[key] = dict(value)
     return save_config()
 
 
@@ -516,6 +587,56 @@ def fetch_json(url: str, timeout: float = 10.0, proxy=None, limit: int = 2_000_0
         return None
 
 
+def fetch_text(url: str, timeout: float = 12.0, proxy=None, limit: int = 8_000_000):
+    """取一段文本，返回 (text, ttfb_seconds)；失败返回 (None, None)。
+
+    会跟随重定向：部分镜像的 /simple 入口是 301（如中科大）。
+    """
+    current = url
+    t0 = time.perf_counter()
+    ttfb = None
+    for _ in range(6):
+        parts = urlsplit(current)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return None, None
+        try:
+            parts, conn, path = _connection(current, timeout, proxy)
+            headers = dict(HEADERS)
+            headers["Accept"] = "text/html, application/vnd.pypi.simple.v1+html, */*"
+            if proxy and proxy.enabled and not proxy.bypass(parts.hostname):
+                headers.update(proxy.header())
+            chunks = []
+            size = 0
+            try:
+                conn.request("GET", path, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+                location = resp.getheader("Location")
+                if 300 <= status < 400 and location:
+                    resp.read()
+                    current = urljoin(current, location)
+                    continue
+                if status >= 400:
+                    resp.read()
+                    return None, None
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    if ttfb is None:
+                        ttfb = time.perf_counter() - t0
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > limit:
+                        break
+            finally:
+                conn.close()
+            return b"".join(chunks).decode("utf-8", "replace"), (ttfb or time.perf_counter() - t0)
+        except Exception:  # noqa: BLE001
+            return None, None
+    return None, None
+
+
 # --------------------------------------------------------------------------- #
 # 测速 / 排名
 # --------------------------------------------------------------------------- #
@@ -580,14 +701,133 @@ def run_benchmark(src_list, proxy=None, runs: int = RUNS, timeout: float = TIMEO
         else:
             results[index]["error"] = r.error or "下载失败"
             emit("speed", index, None, r.error or "下载失败")
+        emit("step", total_steps)
 
         version = _registry_npm_version(base, proxy)
         results[index]["version"] = version
         emit("fresh", index, version, "")
+        emit("step", total_steps)
 
     order = rank_results(results)
     emit("rank", order)
     return results
+
+
+_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.I)
+
+
+def pip_index_url(base: str, pkg: str = PIP_PROBE_PKG) -> str:
+    """PyPI simple 索引里某个包的页面地址（必须以 / 结尾，相对链接才能解析）。"""
+    return join_url(base, pkg + "/")
+
+
+def parse_pip_simple(html: str, page_url: str):
+    """从 PEP 503 页面解析出 (最新版本, 该版本 wheel 的绝对地址)。
+
+    PyPI 没有 npm 那种 dist-tags 接口，版本只能从 wheel 文件名里取；
+    下载测速也依赖页面里给出的真实文件地址。
+    """
+    versions, wheels = [], []
+    for href in _HREF_RE.findall(html or ""):
+        target = href.split("#", 1)[0].strip()
+        if not target.lower().endswith(".whl"):
+            continue
+        filename = target.rsplit("/", 1)[-1]
+        parts = filename.split("-")
+        if len(parts) < 2 or not parts[1]:
+            continue
+        version = parts[1]
+        versions.append(version)
+        wheels.append((version, urljoin(page_url, target)))
+    if not versions:
+        return None, None
+    newest = newest_version(versions)
+    for version, url in wheels:
+        if version == newest:
+            return newest, url
+    return newest, wheels[0][1]
+
+
+def run_pip_benchmark(src_list, proxy=None, runs: int = RUNS, timeout: float = TIMEOUT,
+                      speed_timeout: float = SPEED_TIMEOUT, emit=None, cancel=None):
+    """pip 源测速：并行测 simple 页延迟，串行解析版本并下载 wheel。"""
+    emit = emit or (lambda *args: None)
+    cancel = cancel or threading.Event()
+    pairs = [(item["name"], item["url"]) for item in src_list]
+    count = len(pairs)
+    results = [_empty_result() for _ in range(count)]
+    total_steps = count * (runs + 2)
+
+    def latency(index: int):
+        _, base = pairs[index]
+        url = pip_index_url(base)
+        values = []
+        error = ""
+        for _ in range(runs):
+            if cancel.is_set():
+                return
+            r = probe(url, timeout=timeout, first_byte_only=True, proxy=proxy)
+            if r.ok and r.ttfb is not None:
+                values.append(r.ttfb * 1000)
+            else:
+                error = r.error or "连接失败"
+            emit("step", total_steps)
+        if values:
+            results[index]["ok"] = True
+            results[index]["lat"] = {"min": min(values), "median": median(values)}
+            emit("latency", index, results[index]["lat"], "")
+        else:
+            results[index]["error"] = error
+            emit("latency", index, None, error)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, count))) as pool:
+        list(pool.map(latency, range(count)))
+
+    for index in range(count):
+        if cancel.is_set():
+            break
+        if not results[index]["ok"]:
+            continue
+        _, base = pairs[index]
+        page = pip_index_url(base)
+
+        html, _ttfb = fetch_text(page, timeout=timeout, proxy=proxy)
+        version, wheel = parse_pip_simple(html, page) if html else (None, None)
+        results[index]["version"] = version
+        emit("fresh", index, version, "")
+        emit("step", total_steps)
+
+        if not wheel:
+            results[index]["error"] = "索引页解析失败"
+            emit("speed", index, None, "索引页解析失败")
+            emit("step", total_steps)
+            continue
+
+        r = probe(wheel, timeout=speed_timeout, proxy=proxy)
+        if r.ok and r.size > 0 and r.total > 0:
+            start = r.ttfb if r.ttfb is not None else 0.0
+            elapsed = r.total - start
+            if elapsed < 0.02:
+                elapsed = r.total
+            results[index]["speed"] = r.size / 1e6 / max(elapsed, 1e-6)
+            emit("speed", index, results[index]["speed"], "")
+        else:
+            results[index]["error"] = r.error or "下载失败"
+            emit("speed", index, None, r.error or "下载失败")
+        emit("step", total_steps)
+
+    order = rank_results(results)
+    emit("rank", order)
+    return results
+
+
+def run_ecosystem_benchmark(eco: str, src_list, **kwargs):
+    """按生态分派到对应的测速实现。"""
+    if eco == "pip":
+        return run_pip_benchmark(src_list, **kwargs)
+    return run_benchmark(src_list, **kwargs)
 
 
 def _registry_npm_version(base: str, proxy=None):
@@ -681,7 +921,7 @@ def run_tool(name: str, args, timeout: float = 30, cwd=None):
 VERSION_ARGS = {
     "npm": ["-v"], "pnpm": ["-v"], "node": ["-v"],
     "yarn": ["--version"], "python": ["--version"], "python3": ["--version"],
-    "git": ["--version"],
+    "pip": ["--version"], "pip3": ["--version"], "git": ["--version"],
 }
 
 
@@ -695,6 +935,10 @@ def tool_version(name: str) -> str:
             first = first[len("git version"):].strip()
         elif lower.startswith("python "):
             first = first[len("python "):].strip()
+        elif lower.startswith("pip "):
+            first = first[len("pip "):].strip()
+            # "25.2 from C:\...\site-packages\pip (python 3.12)" → 只留版本号
+            first = first.split(" from ", 1)[0].strip()
         return first
     except Exception:  # noqa: BLE001
         return ""
@@ -798,6 +1042,8 @@ def yarn_major() -> int:
 
 
 def get_registry(manager: str, scope=None) -> str:
+    if manager == "pip":
+        return effective_pip_index(scope)
     extra, cwd = _scope_args(scope)
     try:
         if manager == "yarn":
@@ -829,6 +1075,8 @@ def _set_yarn_project_registry(directory: str, url: str):
 
 def set_registry(manager: str, url: str, scope=None):
     """切换源。返回 (ok, error, previous)。previous 用于失败回滚。"""
+    if manager == "pip":
+        return set_pip_index(url, scope)
     project = _project_dir(scope)
     if manager == "yarn" and project:
         return _set_yarn_project_registry(project, url)
@@ -943,6 +1191,162 @@ def write_project_npmrc(directory: str, url: str) -> str:
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.writelines(lines)
     return path
+
+
+# --------------------------------------------------------------------------- #
+# pip 配置（pip.ini）
+# --------------------------------------------------------------------------- #
+
+def pip_user_ini() -> str:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "pip", PIP_INI_NAME)
+    return os.path.join(os.path.expanduser("~"), ".config", "pip", PIP_INI_NAME)
+
+
+def pip_scope_ini(scope=None) -> str:
+    """用户级写用户 pip.ini；venv 级写 <venv>\\pip.ini（pip 的 site 配置）。"""
+    scope = scope or {}
+    if scope.get("mode") == "project" and scope.get("dir"):
+        return os.path.join(scope["dir"], PIP_INI_NAME)
+    return pip_user_ini()
+
+
+def looks_like_venv(directory: str) -> bool:
+    if not directory:
+        return False
+    markers = ("pyvenv.cfg", os.path.join("Scripts", "python.exe"),
+               os.path.join("bin", "python"))
+    return any(os.path.exists(os.path.join(directory, marker)) for marker in markers)
+
+
+def _read_ini_text(path: str) -> str:
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return ""
+    for encoding in ("utf-8-sig", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+
+
+def _ini_sections(lines):
+    """[(小写节名, 节头行号, 节结束行号)]。"""
+    sections = []
+    current = None
+    for index, line in enumerate(lines):
+        match = _SECTION_RE.match(line)
+        if match:
+            if current is not None:
+                sections.append((current[0], current[1], index))
+            current = (match.group(1).strip().lower(), index)
+    if current is not None:
+        sections.append((current[0], current[1], len(lines)))
+    return sections
+
+
+def _ini_value(text: str, section: str, key: str) -> str:
+    lines = text.splitlines()
+    pattern = re.compile(r"^\s*" + re.escape(key) + r"\s*[=:]\s*(.*)$", re.I)
+    for name, start, end in _ini_sections(lines):
+        if name != section.lower():
+            continue
+        for line in lines[start + 1:end]:
+            if line.lstrip().startswith(("#", ";")):
+                continue
+            match = pattern.match(line)
+            if match:
+                return match.group(1).strip()
+    return ""
+
+
+def _ini_set(text: str, section: str, key: str, value: str) -> str:
+    """按行改写 ini，保留注释与其他键，不整份重写。"""
+    lines = text.splitlines()
+    new_line = f"{key} = {value}"
+    pattern = re.compile(r"^\s*" + re.escape(key) + r"\s*[=:]", re.I)
+    for name, start, end in _ini_sections(lines):
+        if name != section.lower():
+            continue
+        for index in range(start + 1, end):
+            if lines[index].lstrip().startswith(("#", ";")):
+                continue
+            if pattern.match(lines[index]):
+                lines[index] = new_line
+                return "\n".join(lines) + "\n"
+        insert_at = start + 1
+        for index in range(start + 1, end):
+            if lines[index].strip():
+                insert_at = index + 1
+        lines.insert(insert_at, new_line)
+        return "\n".join(lines) + "\n"
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append(f"[{section}]")
+    lines.append(new_line)
+    return "\n".join(lines) + "\n"
+
+
+def _write_text_atomic(path: str, text: str):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    os.replace(temp, path)
+
+
+def read_pip_index(path: str) -> str:
+    return _ini_value(_read_ini_text(path), "global", "index-url")
+
+
+def effective_pip_index(scope=None) -> str:
+    """pip 实际生效的 index-url：环境变量 > venv 配置 > 用户配置 > 官方源。
+
+    pip 没配 index-url 时用的是 PyPI 官方，这里跟着返回官方源，
+    界面上就能正确高亮「PyPI 官方」而不是显示「未检测到」。
+    """
+    url = (os.environ.get("PIP_INDEX_URL") or "").strip()
+    if url:
+        return url
+    scope = scope or {}
+    if scope.get("mode") == "project" and scope.get("dir"):
+        value = read_pip_index(pip_scope_ini(scope))
+        if value:
+            return value
+    return read_pip_index(pip_user_ini()) or OFFICIAL_PIP_INDEX
+
+
+def set_pip_index(url: str, scope=None):
+    """写入 pip.ini 的 [global] index-url。返回 (ok, error, previous)。"""
+    path = pip_scope_ini(scope)
+    text = _read_ini_text(path)
+    previous = _ini_value(text, "global", "index-url")
+    try:
+        _write_text_atomic(path, _ini_set(text, "global", "index-url", url))
+        return True, "", previous
+    except OSError as exc:
+        return False, str(exc), previous
+
+
+def pip_warnings(scope=None) -> list:
+    """可能让切换“看起来没生效”的情况，返回代码列表供界面翻译。"""
+    codes = []
+    if (os.environ.get("PIP_INDEX_URL") or "").strip():
+        codes.append("env_index_url")
+    if (os.environ.get("PIP_EXTRA_INDEX_URL") or "").strip():
+        codes.append("env_extra_index")
+    if _ini_value(_read_ini_text(pip_scope_ini(scope)), "global", "extra-index-url").strip():
+        codes.append("extra_index_url")
+    return codes
 
 
 def latest_npm_version(proxy=None) -> str:

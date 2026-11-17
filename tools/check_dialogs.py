@@ -16,6 +16,7 @@ os.environ.setdefault("NPM_MIRROR_TOOL_CONFIG_DIR", os.path.join(ROOT, "out", "c
 
 import tkinter as tk  # noqa: E402
 
+from app import core  # noqa: E402
 from app.ui import App  # noqa: E402
 
 OPENERS = (
@@ -52,6 +53,23 @@ def measure(dialog):
     return dialog.winfo_width(), dialog.winfo_height(), overflow, squashed
 
 
+def main_overflow(app):
+    """主窗口里的控件有没有被挤到右边界外（顶部那一排最容易出问题）。"""
+    root = app.root
+    root.update()
+    limit = root.winfo_rootx() + root.winfo_width()
+    bad = []
+    stack = [root]
+    while stack:
+        widget = stack.pop()
+        stack.extend(widget.winfo_children())
+        if not widget.winfo_ismapped():
+            continue
+        if widget.winfo_rootx() + widget.winfo_width() > limit + 1:
+            bad.append(widget.winfo_class())
+    return root.winfo_width(), bad
+
+
 def run(scale: float):
     root = tk.Tk()
     app = App(root, scale=scale)
@@ -60,6 +78,16 @@ def run(scale: float):
     left, top, right, bottom = app.work_area()
     print(f"工作区 {right - left}x{bottom - top}")
     failures = 0
+    for eco in core.ECOSYSTEMS:
+        if eco != app.ecosystem:
+            app.select_ecosystem(eco)
+            root.update()
+        width, bad = main_overflow(app)
+        ok = not bad
+        print(f"  {'ok  ' if ok else 'FAIL'} 主窗口[{eco:3s}] {width}px"
+              f"{'' if ok else ' 越界控件: ' + str(sorted(set(bad))[:6])}")
+        if not ok:
+            failures += 1
     for name, opener in OPENERS:
         try:
             opener(app)
@@ -94,4 +122,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # 关窗时后台的版本查询线程可能还在跑，正常退出会在解释器析构阶段刷
+    # "cannot schedule new futures after interpreter shutdown"，这里直接硬退出。
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
